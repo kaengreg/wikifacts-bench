@@ -17,8 +17,7 @@ def main():
 
     ds_dict = load_facts(args.dataset, args.split)
     
-    facts = [ds_dict[_id]['text'] for _id  in ds_dict.keys()][:5]
-    labels = []  
+    facts = [ds_dict[_id]['text'] for _id  in ds_dict.keys()]
     client = RagClient(model_name=args.model, api_url=args.api_url, api_key=args.api_key, max_attempts=args.max_attempts)
 
     preds = []

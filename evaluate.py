@@ -10,8 +10,8 @@ def main():
     parser.add_argument('--dataset', type=str, default="kaengreg/wikifacts-bench")
     parser.add_argument('--model', type=str, default="llama3-70b")
     parser.add_argument('--split', type=str, default='rus_queries')
-    parser.add_argument('--api_url', type=str, default='http://89.169.128.106:6266/v1')
-    parser.add_argument('--api_key', type=str, default='874c364705747e7ab314ceba89c2029c9a72ab2154664c470eb4ce18c2f0acb0')
+    parser.add_argument('--api_url', type=str, default='')
+    parser.add_argument('--api_key', type=str, default='')
     parser.add_argument('--max_attempts', type=int, default=3)
 
     args = parser.parse_args()

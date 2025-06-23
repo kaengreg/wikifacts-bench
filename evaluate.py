@@ -3,25 +3,27 @@ from data_loader import load_facts
 from rag_client import RagClient
 from typing import List
 from sklearn.metrics import accuracy_score, recall_score
+from tqdm import tqdm 
 
 def main():
     parser = argparse.ArgumentParser()
-    
     parser.add_argument('--dataset', type=str, default="kaengreg/wikifacts-bench")
     parser.add_argument('--model', type=str, default="llama3-70b")
     parser.add_argument('--split', type=str, default='rus_queries')
-    parser.add_argument('--api_url', type=str)
-    parser.add_argument('--api_key', type=str)
+    parser.add_argument('--api_url', type=str, default='http://89.169.128.106:6266/v1')
+    parser.add_argument('--api_key', type=str, default='874c364705747e7ab314ceba89c2029c9a72ab2154664c470eb4ce18c2f0acb0')
     parser.add_argument('--max_attempts', type=int, default=3)
+
     args = parser.parse_args()
 
     ds_dict = load_facts(args.dataset, args.split)
     
     facts = [ds_dict[_id]['text'] for _id  in ds_dict.keys()]
+    labels = []  
     client = RagClient(model_name=args.model, api_url=args.api_url, api_key=args.api_key, max_attempts=args.max_attempts)
 
     preds = []
-    for fact in facts:
+    for fact in tqdm(facts, desc="Processing facts", total=len(facts)):
         raw = client.call_llm(fact, no_think=True)
         preds.append(raw)
 

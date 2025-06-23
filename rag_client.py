@@ -11,29 +11,45 @@ class RagClient:
         self.max_attempts = max_attempts
         self.prompt_template = 'Is the following statement factually correct: "{fact}"? Answer only with "yes", "no", or "i don\'t know".'
 
-    def call_llm(self, fact: str) -> str:
+    def call_llm(self, fact: str, no_think: bool = False) -> str:
         for attempt in range(1, self.max_attempts + 1):
             try:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[
+                if no_think:
+                    messages = [
+                            {"role": "system", "content": (
+                                "You are solving a factual verification task.\n"
+                                "You will be given a factual statement.\n"
+                                "Your task is to verify whether the statement is true, false, or uncertain based on your knowledge.\n"
+                                "Respond strictly with one of the following: \"yes\" (if it is true), \"no\" (if it is false), or \"i don't know\" (if you are not sure).\n"
+                                "Only English responses are allowed."
+                            )},
+                            {"role": "user", "content": self.prompt_template.format(fact=fact) + '/no_think'}
+                        ]
+                else:
+                    messages = [
                         {"role": "system", "content": (
                             "You are solving a factual verification task.\n"
                             "You will be given a factual statement.\n"
                             "Your task is to verify whether the statement is true, false, or uncertain based on your knowledge.\n"
                             "Respond strictly with one of the following: \"yes\" (if it is true), \"no\" (if it is false), or \"i don't know\" (if you are not sure)."
+                            "Only English responses are allowed."
                         )},
                         {"role": "user", "content": self.prompt_template.format(fact=fact)}
-                    ],
+                    ]
+
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
                     temperature=0.0,
                     top_p=0.9,
                     timeout=360
                 )
+                #print(messages[1].get("content"))
                 raw = response.choices[0].message.content.strip()
-                print(f"LLM raw response (attempt {attempt}):\n{raw}")
+                #print(f"LLM raw response (attempt {attempt}):\n{raw}")
                 return raw
             except Exception as e:
-                print(f"[Fragment LLM Error] attempt {attempt} failed: {e}")
+                #print(f"[Fragment LLM Error] attempt {attempt} failed: {e}")
                 time.sleep(1)
 
         return ''

@@ -2,7 +2,7 @@ import argparse
 from data_loader import load_facts
 from rag_client import RagClient
 from typing import List
-from sklearn.metrics import accuracy_score, recall_score
+from sklearn.metrics import precision_score, recall_score
 from tqdm import tqdm 
 import json
 import os
@@ -53,8 +53,11 @@ def main():
     preds = [predictions[str(i)] for i in range(len(facts))]
 
     true_labels = ['yes'] * len(preds)
-    accuracy = accuracy_score(true_labels, preds)
-    recall = recall_score(true_labels, preds, pos_label='yes')
+
+    precision = sum(pred == 'yes' for pred in preds) / len(preds)
+    tp = sum(1 for true, pred in zip(true_labels, preds) if true == 'yes' and pred == 'yes')
+    fn = sum(1 for true, pred in zip(true_labels, preds) if true == 'yes' and pred != 'yes')
+    recall = tp / tp + fn if (tp + fn) > 0.0 else 0.0
 
     idk_ratio = preds.count("i don't know") / len(preds)
 
@@ -69,14 +72,14 @@ def main():
                 stats["i don't know"] += 1
         
 
-    print(f"Results for model {args.model}: \n Accuracy: {accuracy:.3f} \n Recall: {recall:.3f} \n Idk-ratio: {idk_ratio:.3f}\n")
+    print(f"Results for model {args.model}: \n precision: {precision:.3f} \n Recall: {recall:.3f} \n Idk-ratio: {idk_ratio:.3f}\n")
     print(f"Answer stats: ")
     for key, value in stats.items():
         print(f" {key}: {value}")
 
     with open(args.out_file, 'w', encoding='utf-8') as f:
         json.dump({'model': args.model, 
-                   'accuracy': accuracy,
+                   'precision': precision,
                    'recall': recall,
                    'idk_ration': idk_ratio,
                    'stats': stats}, f, ensure_ascii=False, indent=2)

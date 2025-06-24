@@ -30,7 +30,7 @@ def main():
 
     ds_dict = load_facts(args.dataset, args.split)
     
-    facts = [ds_dict[_id]['text'] for _id  in ds_dict.keys()]
+    facts = [ds_dict[_id]['text'] for _id  in ds_dict.keys()][:5]
     
     predictions = {}
     if os.path.exists(args.checkpoint_file):
@@ -46,8 +46,8 @@ def main():
         predictions[str(i)] = raw
 
         with open(args.checkpoint_file, 'w', encoding='utf-8') as fc:
-            json.dumps(predictions, fc, ensure_ascii=False, indent=2)
-        with open(args.outputs, 'w', encoding='utf-8') as fo:
+            json.dump(predictions, fc, ensure_ascii=False, indent=2)
+        with open(args.outputs, 'a', encoding='utf-8') as fo:
             fo.write(json.dumps({'fact': fact, 'prediction': raw}, ensure_ascii=False) + '\n')
 
     preds = [predictions[str(i)] for i in range(len(facts))]
@@ -57,7 +57,7 @@ def main():
     precision = sum(pred == 'yes' for pred in preds) / len(preds)
     tp = sum(1 for true, pred in zip(true_labels, preds) if true == 'yes' and pred == 'yes')
     fn = sum(1 for true, pred in zip(true_labels, preds) if true == 'yes' and pred != 'yes')
-    recall = tp / tp + fn if (tp + fn) > 0.0 else 0.0
+    recall = tp / (tp + fn) if (tp + fn) > 0.0 else 0.0
 
     idk_ratio = preds.count("i don't know") / len(preds)
 

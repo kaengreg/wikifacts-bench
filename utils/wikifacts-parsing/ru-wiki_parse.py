@@ -105,8 +105,8 @@ def parse_month_facts(month_url: str) -> list[dict]:
 
                     if a.find_parent('b'):
                         relevant_links.append(full_url)
-                    else:
-                        links.append(full_url)
+                        
+                    links.append(full_url)
 
                 results.append({
                     "section": section_title,

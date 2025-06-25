@@ -22,3 +22,28 @@ def load_facts(dataset_name: str, split: str = 'queries') -> List[Dict[str, Any]
                 'metadata': record['metadata']
             }
     return ds_dict
+
+
+def load_queries(dataset_name: str, split: str):
+    dataset = load_dataset(dataset_name, split)
+    fact_dict = {}
+    for record in dataset['train']:
+        fact_dict[record['id']] = {
+            'text': record['text'],
+            'linked articles': record.get('linked articles', []),
+            'relevant articles': record.get('relevant articles', []),
+            'metadata': record.get('metadata', {})
+        }
+    return fact_dict
+
+
+def load_corpus(dataset_name: str, split: str = 'corpus'):
+    dataset = load_dataset(dataset_name, split)
+    corpus = {}
+    for record in dataset['train']:
+        corpus[record['id']] = {
+            'text': record['text'],
+            'abstract': record['abstract'],
+            'metadata': record['metadata']
+        }
+    return corpus

@@ -1,88 +1,110 @@
-import argparse
-from data_loader import load_facts
-from rag_client import RagClient
-from typing import List
-from sklearn.metrics import precision_score, recall_score
-from tqdm import tqdm 
-import json
 import os
+import json
+import argparse
+from rag_client import FactOnlyClient, LinkedAbstractClient, RelevantAbstractClient
+from data_loader import load_queries, load_corpus
+from collections import Counter
+from tqdm import tqdm
 
 
-def read_checkpoint(chekpoint_path: str): 
-    if os.path.exists(chekpoint_path):
-        with open(chekpoint_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
+def read_checkpoint(path: str):
+    """Reads checkpoint file and load already processed facts"""
+    if os.path.exists(path) and os.path.getsize(path) > 0:
+        with open(path, 'r', encoding='utf-8') as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                print(f"Warning: checkpoint at {path} is corrupted.")
+    return {}
+
+
+def resolve_context(article_ids, corpus):
+    """Returns abstracts from corpus based on list of article IDs."""
+    contexts = []
+    for aid in article_ids:
+        if aid in corpus:
+            contexts.append(corpus[aid]['abstract'])
+        else:
+            print(f"WARNING: Article ID '{aid}' not found in corpus.")
+    return contexts
+    
+def get_rag_client(mode, model_name, api_url, api_key, allow_idk=True):
+    """Selects RAG-client mode"""
+    base_kwargs = dict(model_name=model_name, api_url=api_url, api_key=api_key, allow_idk=allow_idk)
+    if mode == "fact":
+        return FactOnlyClient(**base_kwargs)
+    elif mode == "linked":
+        return LinkedAbstractClient(**base_kwargs)
+    elif mode == "relevant":
+        return RelevantAbstractClient(**base_kwargs)
+    else:
+        raise ValueError(f"Unsupported mode: {mode}")
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset', type=str, default="kaengreg/wikifacts-bench")
-    parser.add_argument('--model', type=str, default="llama3-70b")
-    parser.add_argument('--split', type=str, default='rus_queries')
-    parser.add_argument('--api_url', type=str, default='http://89.169.128.106:6266/v1')
-    parser.add_argument('--api_key', type=str, default='874c364705747e7ab314ceba89c2029c9a72ab2154664c470eb4ce18c2f0acb0')
-    parser.add_argument('--checkpoint_file', type=str, default='checkpoint.jsonl')
+    parser.add_argument('--dataset', type=str, default='kaengreg/wikifacts-bench')
+    parser.add_argument('--lang', type=str, default='rus')
+    parser.add_argument('--model', type=str, default='llama3-70b')
+    parser.add_argument('--api_url', type=str, default='')
+    parser.add_argument('--api_key', type=str, default='')
+    parser.add_argument('--mode', choices=['fact', 'linked', 'relevant'], default='linked')
+    parser.add_argument('--allow_idk', action='store_true', default=True)
+    parser.add_argument('--checkpoint', type=str, default='checkpoint.json')
     parser.add_argument('--outputs', type=str, default='outputs.jsonl')
-    parser.add_argument('--out_file', type=str, default='results.json')
-    parser.add_argument('--max_attempts', type=int, default=3)
-
     args = parser.parse_args()
 
-    ds_dict = load_facts(args.dataset, args.split)
-    
-    facts = [ds_dict[_id]['text'] for _id  in ds_dict.keys()][:5]
-    
-    predictions = {}
-    if os.path.exists(args.checkpoint_file):
-        predictions = read_checkpoint(args.checkpoint_file)
+    queries = load_queries(args.dataset, f"{args.lang}_queries")
+    corpus = load_corpus(args.dataset, f"{args.lang}_corpus")
+    client = get_rag_client(args.mode, args.model, args.api_url, args.api_key, allow_idk=args.allow_idk)
 
-    remaining_facts = [(i, fact) for i, fact in enumerate(facts) if str(i) not in predictions]
+    predictions  = read_checkpoint(args.checkpoint)
+    remaining = [(qid, q) for qid, q in queries.items() if qid not in predictions]
 
-    client = RagClient(model_name=args.model, api_url=args.api_url, api_key=args.api_key, max_attempts=args.max_attempts)
+    print(f"Running client class: {client.__class__.__name__}")
+    for qid, record in tqdm(remaining, desc="Processing facts", total=len(remaining)):
+        fact = record['text']
+        if args.mode.strip() == "fact":
+            prompt, pred = client.call_llm(fact)
+        elif args.mode.strip() == "linked":
+            abstracts = resolve_context(record.get("linked articles", []), corpus)
+            prompt, pred = client.call_llm(fact, abstracts)
+        elif args.mode.strip() == "relevant":
+            abstracts = resolve_context(record.get("relevant articles", []), corpus)
+            prompt, pred = client.call_llm(fact, abstracts)
+        else:
+            raise ValueError("Invalid mode")
 
-    
-    for i, fact in tqdm(remaining_facts, desc="Processing facts", total=len(remaining_facts)):
-        raw = client.call_llm(fact, no_think=True)
-        predictions[str(i)] = raw
+        predictions[qid] = pred
 
-        with open(args.checkpoint_file, 'w', encoding='utf-8') as fc:
-            json.dump(predictions, fc, ensure_ascii=False, indent=2)
-        with open(args.outputs, 'a', encoding='utf-8') as fo:
-            fo.write(json.dumps({'fact': fact, 'prediction': raw}, ensure_ascii=False) + '\n')
+        with open(args.checkpoint, 'w', encoding='utf-8') as fcp:
+            json.dump(predictions, fcp, ensure_ascii=False, indent=2)
+        with open(args.outputs, 'a', encoding='utf-8') as fout:
+            fout.write(json.dumps({"prompt": prompt, "prediction": pred}, ensure_ascii=False) + '\n')
 
-    preds = [predictions[str(i)] for i in range(len(facts))]
+    all_preds = [predictions.get(qid, predictions[qid]) for qid in queries]
 
-    true_labels = ['yes'] * len(preds)
+    stats = Counter(all_preds)
+    tp = stats['yes']
+    fn = sum(1 for p in all_preds if p == 'no')
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    accuracy = sum(p == 'yes' for p in all_preds) / len(all_preds)
+    idk_ratio = stats.get("i don't know", 0) / len(all_preds)
 
-    precision = sum(pred == 'yes' for pred in preds) / len(preds)
-    tp = sum(1 for true, pred in zip(true_labels, preds) if true == 'yes' and pred == 'yes')
-    fn = sum(1 for true, pred in zip(true_labels, preds) if true == 'yes' and pred != 'yes')
-    recall = tp / (tp + fn) if (tp + fn) > 0.0 else 0.0
+    print(f"Accuracy: {accuracy:.4f}")
+    print(f"Recall: {recall:.4f}")
+    print(f"IDK ratio: {idk_ratio:.4f}")
+    print("Stats:", dict(stats))
 
-    idk_ratio = preds.count("i don't know") / len(preds)
-
-    stats = dict.fromkeys(['yes', 'no', "i don't know"], 0)
-    for pred in preds:
-        match pred:
-            case 'yes':
-                stats['yes'] += 1
-            case 'no':
-                stats['no'] += 1
-            case "i don't know":
-                stats["i don't know"] += 1
-        
-
-    print(f"Results for model {args.model}: \n precision: {precision:.3f} \n Recall: {recall:.3f} \n Idk-ratio: {idk_ratio:.3f}\n")
-    print(f"Answer stats: ")
-    for key, value in stats.items():
-        print(f" {key}: {value}")
-
-    with open(args.out_file, 'w', encoding='utf-8') as f:
-        json.dump({'model': args.model, 
-                   'precision': precision,
-                   'recall': recall,
-                   'idk_ration': idk_ratio,
-                   'stats': stats}, f, ensure_ascii=False, indent=2)
+    with open("final_results.json", 'w', encoding='utf-8') as fout:
+        json.dump({
+            "model": args.model,
+            "accuracy": accuracy,
+            "recall (without idk)": recall,
+            "idk_ratio": idk_ratio,
+            "stats": dict(stats)
+        }, fout, ensure_ascii=False, indent=2)
+ 
 
 if __name__ == "__main__":
     main()

@@ -3,17 +3,25 @@ from typing import Optional, List
 from openai import OpenAI
 import re
 import json
+import os
 
 
 class SimpleRagClient:
     def __init__(self, model_name: str, api_url: str, api_key: Optional[str] = None,
-                 timeout: int = 360, max_attempts: int = 3, allow_idk: bool = False, temperature: int = 0.1):
+                 timeout: int = 360, max_attempts: int = 3, allow_idk: bool = False, temperature: int = 0.1, failed_facts_path: str = 'failed_facts.jsonl'):
         self.client = OpenAI(api_key=api_key, base_url=api_url, timeout=timeout)
         self.model = model_name
         self.timeout = timeout
         self.max_attempts = max_attempts
         self.allow_idk = allow_idk
         self.temperature = temperature
+        self.failed_facts = failed_facts_path
+
+        failed_dir = os.path.dirname(self.failed_facts)
+        if failed_dir and not os.path.exists(failed_dir):
+            os.makedirs(failed_dir, exist_ok=True)
+
+        open(self.failed_facts, 'a', encoding='utf-8').close()
 
     def _build_messages(self, system_instruction: str, user_prompt: str, no_think: bool) -> List[dict]:
         if not self.allow_idk:
@@ -48,8 +56,8 @@ class SimpleRagClient:
                 raw = response.choices[0].message.content.strip()
                 last_raw = raw
 
-                match = re.search(r'\{.*\}', raw, flags=re.DOTALL)
-                candidate = match.group(0) if match else raw
+                m = re.search(r"```json\s*(\{[\s\S]*?\})\s*```|(\{[\s\S]*?\})", raw, flags=re.DOTALL)
+                candidate = m.group(1) or m.group(2) if m else raw
 
                 try:
                     resp_json = json.loads(candidate)
@@ -72,7 +80,7 @@ class SimpleRagClient:
         try:
             return json.loads(last_raw)
         except Exception:
-            raise ValueError(f"Unable to parse JSON from LLM output after {self.max_attempts} attempts:\n{last_raw}")
+            return None
 
 
 class FactOnlyClient(SimpleRagClient):
@@ -92,6 +100,13 @@ class FactOnlyClient(SimpleRagClient):
         user_prompt = f'Is the following statement factually correct: "{fact}"?'
         messages = self._build_messages(system_msg, user_prompt, no_think)
         resp_json = self._call(messages)
+
+        if resp_json is None:
+            with open(self.failed_facts, 'a', encoding='utf-8') as f:
+                json.dump({'fact': fact, 'error': 'Unable to parse JSON'}, f, ensure_ascii=False)
+                f.write('\n')
+            return None, None
+        
         response = json.dumps(resp_json, ensure_ascii=False)
         return user_prompt, response
 
@@ -118,6 +133,13 @@ class LinkedAbstractClient(SimpleRagClient):
         )
         messages = self._build_messages(system_msg, user_prompt, no_think)
         resp_json = self._call(messages)
+
+        if resp_json is None:
+            with open(self.failed_facts, 'a', encoding='utf-8') as f:
+                json.dump({'fact': fact, 'error': 'Unable to parse JSON'}, f, ensure_ascii=False)
+                f.write('\n')
+            return None, None
+        
         response = json.dumps(resp_json, ensure_ascii=False)
         return user_prompt, response
 
@@ -144,5 +166,12 @@ class RelevantAbstractClient(SimpleRagClient):
         )
         messages = self._build_messages(system_msg, user_prompt, no_think)
         resp_json = self._call(messages)
+
+        if resp_json is None:
+            with open(self.failed_facts, 'a', encoding='utf-8') as f:
+                json.dump({'fact': fact, 'error': 'Unable to parse JSON'}, f, ensure_ascii=False)
+                f.write('\n')
+            return None, None
+        
         response = json.dumps(resp_json, ensure_ascii=False)
         return user_prompt, response

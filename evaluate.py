@@ -49,9 +49,9 @@ def resolve_context(article_ids, corpus):
             print(f"WARNING: Article ID '{aid}' not found in corpus.")
     return contexts
     
-def get_rag_client(mode, model_name, api_url, api_key, allow_idk=True):
+def get_rag_client(mode, model_name, api_url, api_key,  failed_facts_path, allow_idk=True):
     """Selects RAG-client mode"""
-    base_kwargs = dict(model_name=model_name, api_url=api_url, api_key=api_key, allow_idk=allow_idk)
+    base_kwargs = dict(model_name=model_name, api_url=api_url, api_key=api_key, allow_idk=allow_idk, failed_facts_path=failed_facts_path)
     if mode == "fact":
         return FactOnlyClient(**base_kwargs)
     elif mode == "linked":
@@ -74,6 +74,7 @@ def main():
     parser.add_argument('--checkpoint', type=str, default='checkpoint.json')
     parser.add_argument('--outputs', type=str, default='outputs.jsonl')
     parser.add_argument('--results', type=str, default='final_results.json')
+    parser.add_argument('--failed_facts', type=str, default='failed_facts.jsonl')
     parser.add_argument('--use_fragment_retriever', action='store_true')
     parser.add_argument('--retriever_model', type=str, default='')
     parser.add_argument('--retriever_top_k', type=int, default=5)
@@ -84,7 +85,7 @@ def main():
     for path in [args.checkpoint, args.outputs, args.results]:
         os.makedirs(os.path.dirname(path), exist_ok=True) if os.path.dirname(path) else None
 
-    queries = load_queries(args.dataset, f"{args.lang}_queries")
+    queries = dict(list(load_queries(args.dataset, f"{args.lang}_queries").items())[:5])
     corpus = load_corpus(args.dataset, f"{args.lang}_corpus")
 
     if args.use_fragment_retriever:
@@ -95,7 +96,7 @@ def main():
             splitter=args.retriever_splitter
         )
         
-    client = get_rag_client(args.mode, args.model, args.api_url, args.api_key, allow_idk=args.allow_idk)
+    client = get_rag_client(args.mode, args.model, args.api_url, args.api_key, args.failed_facts, allow_idk=args.allow_idk)
 
     predictions  = read_checkpoint(args.checkpoint)
     remaining = [(qid, q) for qid, q in queries.items() if qid not in predictions]
@@ -168,10 +169,10 @@ def main():
         with open(args.checkpoint, 'w', encoding='utf-8') as fcp:
             json.dump(predictions, fcp, ensure_ascii=False, indent=2)
         with open(args.outputs, 'a', encoding='utf-8') as fout:
-            fout.write(json.dumps({"prompt": prompt, "prediction": answer, "reasoning": reasoning}, ensure_ascii=False) + '\n')
+            fout.write(json.dumps({"prompt": prompt, "prediction": answer, "reasoning": reasoning, 'output': resp_str}, ensure_ascii=False) + '\n')
 
     all_preds = []
-
+    
     for qid in queries:
         rec = predictions[qid]
         if isinstance(rec, dict):

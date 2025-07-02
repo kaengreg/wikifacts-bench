@@ -7,7 +7,7 @@ import json
 
 class SimpleRagClient:
     def __init__(self, model_name: str, api_url: str, api_key: Optional[str] = None,
-                 timeout: int = 360, max_attempts: int = 3, allow_idk: bool = True, temperature: int = 0.1):
+                 timeout: int = 360, max_attempts: int = 3, allow_idk: bool = False, temperature: int = 0.1):
         self.client = OpenAI(api_key=api_key, base_url=api_url, timeout=timeout)
         self.model = model_name
         self.timeout = timeout
@@ -17,8 +17,9 @@ class SimpleRagClient:
 
     def _build_messages(self, system_instruction: str, user_prompt: str, no_think: bool) -> List[dict]:
         if not self.allow_idk:
-            system_instruction = system_instruction.replace('"yes", "no", or "i don\'t know"', '"yes" or "no"')
-            user_prompt = user_prompt.replace('"yes", "no", or "i don\'t know"', '"yes" or "no"')
+            system_instruction = re.sub(r",\s*or 'idk' if uncertain\.?", "", system_instruction)
+            system_instruction = system_instruction.replace("one of 'yes', 'no', 'idk'", "one of 'yes', 'no'")
+            user_prompt = user_prompt.replace(", or 'idk'", "")
 
         if no_think:
             user_prompt += "/no_think"

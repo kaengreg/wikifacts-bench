@@ -123,7 +123,6 @@ def main():
     print(f"Running client class: {client.__class__.__name__}")
     for qid, record in tqdm(remaining, desc="Processing facts", total=len(remaining)):
         fact = record['text']
-        print(f"FACT: {fact}")
         if args.mode.strip() == "fact":
             prompt, resp_str = client.call_llm(fact)
         elif args.mode.strip() == "linked":

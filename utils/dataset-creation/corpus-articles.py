@@ -102,7 +102,19 @@ def main(args):
 
     cp_out = open(args.output_corpus, 'a', encoding='utf-8')
 
-    for fact in tqdm(facts, desc="Processing facts"):
+    processed_queries = set()
+    if os.path.exists(args.output_queries):
+        with open(args.output_queries, 'r', encoding='utf-8') as qp_file:
+            for line in qp_file:
+                try:
+                    entry = json.loads(line)
+                    processed_queries.add(entry['id'])
+                except Exception:
+                    continue
+    qp_out = open(args.output_queries, 'a', encoding='utf-8')
+    queries_entries = []
+
+    for idx, fact in enumerate(tqdm(facts, desc="Processing facts and queries")):
         for url in fact['links'] + fact['relevant_links']:
             if url and url not in processed_links:
                 article_text = get_wikipedia_article(url)
@@ -120,52 +132,39 @@ def main(args):
                 cp_out.write(json.dumps(corpus_entries[cid], ensure_ascii=False) + '\n')
                 cp_out.flush()
 
-    cp_out.close()
-
-    processed_queries = set()
-    if os.path.exists(args.output_queries):
-        with open(args.output_queries, 'r', encoding='utf-8') as qp_file:
-            for line in qp_file:
-                try:
-                    entry = json.loads(line)
-                    processed_queries.add(entry['id'])
-                except Exception:
-                    continue
-
-    qp_out = open(args.output_queries, 'a', encoding='utf-8')
-
-    queries_entries = []
-    for idx, fact in enumerate(tqdm(facts, desc="Building queries")):
         qid = f"q-{idx}"
-        if qid in processed_queries:
-            continue
-        linked_cids = [processed_links[url] for url in fact['links'] if url in processed_links]
-        relevant_cids = [processed_links[url] for url in fact['relevant_links'] if url in processed_links]
+        if qid not in processed_queries:
+            linked_cids = [processed_links[url] for url in fact['links'] if url in processed_links]
+            relevant_cids = [processed_links[url] for url in fact['relevant_links'] if url in processed_links]
 
-        article_titles = [
-            extract_article_title(url)
-            for url in fact['links'] + fact['relevant_links']
-            if url in processed_links
-        ]
-        title_words = set()
-        for title in article_titles:
-            decoded_title = unquote(title)
-            title_text = decoded_title.replace('_', ' ')
-            title_words.update(re.findall(r'\w+', title_text.lower(), flags=re.UNICODE))
+            article_titles = [
+                extract_article_title(url)
+                for url in fact['links'] + fact['relevant_links']
+                if url in processed_links
+            ]
 
-        fact_words = set(re.findall(r'\w+', fact['text'].lower(), flags=re.UNICODE))
-        keywords = sorted(title_words - fact_words)
+            title_words = set()
+            for title in article_titles:
+                decoded = unquote(title).replace('_', ' ')
+                title_words.update(re.findall(r'\w+', decoded.lower(), flags=re.UNICODE))
 
-        queries_entries.append({
-            'id': qid,
-            'text': fact['text'],
-            'linked articles': linked_cids,
-            'relevant articles': relevant_cids,
-            'keywords': keywords,
-            'metadata': {'fact_date': fact['fact_date']}
-        })
-        qp_out.write(json.dumps(queries_entries[-1], ensure_ascii=False) + '\n')
-        qp_out.flush()
+            fact_words = set(re.findall(r'\w+', fact['text'].lower(), flags=re.UNICODE))
+            keywords = sorted(title_words - fact_words)
+
+            entry = {
+                'id': qid,
+                'text': fact['text'],
+                'linked articles': linked_cids,
+                'relevant articles': relevant_cids,
+                'keywords': keywords,
+                'metadata': {'fact_date': fact['fact_date']}
+            }
+            
+            queries_entries.append(entry)
+            qp_out.write(json.dumps(entry, ensure_ascii=False) + '\n')
+            qp_out.flush()
+
+    cp_out.close()
     qp_out.close()
 
 

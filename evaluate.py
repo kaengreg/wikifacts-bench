@@ -84,7 +84,7 @@ def main():
     for path in [args.checkpoint, args.outputs, args.results]:
         os.makedirs(os.path.dirname(path), exist_ok=True) if os.path.dirname(path) else None
 
-    queries = dict(list(load_queries(args.dataset, f"{args.lang}_queries").items())[:5])
+    queries = load_queries(args.dataset, f"{args.lang}_queries")
     corpus = load_corpus(args.dataset, f"{args.lang}_corpus")
 
     if args.use_fragment_retriever:
@@ -147,7 +147,7 @@ def main():
         answer = resp_json['answer']
         reasoning = resp_json.get('reasoning', '')
 
-        predictions[qid] = answer
+        predictions[qid] = {"answer": answer, "reasoning": reasoning}
 
         raw_keywords = record.get('keywords', [])
 
@@ -168,9 +168,16 @@ def main():
         with open(args.checkpoint, 'w', encoding='utf-8') as fcp:
             json.dump(predictions, fcp, ensure_ascii=False, indent=2)
         with open(args.outputs, 'a', encoding='utf-8') as fout:
-            fout.write(json.dumps({"prompt": prompt, "prediction": answer}, ensure_ascii=False) + '\n')
+            fout.write(json.dumps({"prompt": prompt, "prediction": answer, "reasoning": reasoning}, ensure_ascii=False) + '\n')
 
-    all_preds = [predictions.get(qid, predictions[qid]) for qid in queries]
+    all_preds = []
+
+    for qid in queries:
+        rec = predictions[qid]
+        if isinstance(rec, dict):
+            all_preds.append(rec["answer"])
+        else:
+            all_preds.append(rec)
 
     stats = Counter(all_preds)
     tp = stats['yes']

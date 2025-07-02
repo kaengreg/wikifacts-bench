@@ -19,6 +19,7 @@ def load_facts(dataset_name: str, split: str = 'queries') -> List[Dict[str, Any]
                 'text': record['text'],
                 'linked articles': record['linked articles'],
                 'relevant articles': record['relevant articles'],
+                'keywords': record['keywords'],
                 'metadata': record['metadata']
             }
     return ds_dict
@@ -32,6 +33,7 @@ def load_queries(dataset_name: str, split: str):
             'text': record['text'],
             'linked articles': record.get('linked articles', []),
             'relevant articles': record.get('relevant articles', []),
+            'keywords': record.get('keywords', []),
             'metadata': record.get('metadata', {})
         }
     return fact_dict

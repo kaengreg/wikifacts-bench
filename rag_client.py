@@ -1,6 +1,8 @@
 import time
 from typing import Optional, List
 from openai import OpenAI
+import re
+import json
 
 
 class SimpleRagClient:
@@ -26,7 +28,13 @@ class SimpleRagClient:
             {"role": "user", "content": user_prompt}
         ]
 
-    def _call(self, messages: List[dict]) -> str:
+    def _call(self, messages: List[dict]) -> dict:
+        """
+        Send messages to the chat API, extract and parse JSON with keys 'answer' and 'reasoning',
+        retrying up to self.max_attempts times if parsing fails.
+        Returns the parsed JSON dict.
+        """
+        last_raw = ""
         for attempt in range(1, self.max_attempts + 1):
             try:
                 response = self.client.chat.completions.create(
@@ -36,69 +44,104 @@ class SimpleRagClient:
                     top_p=0.9,
                     timeout=self.timeout
                 )
-                return response.choices[0].message.content.strip()
+                raw = response.choices[0].message.content.strip()
+                last_raw = raw
+
+                match = re.search(r'\{.*\}', raw, flags=re.DOTALL)
+                candidate = match.group(0) if match else raw
+
+                try:
+                    resp_json = json.loads(candidate)
+                    if 'answer' in resp_json and 'reasoning' in resp_json:
+                        return resp_json
+                except json.JSONDecodeError:
+                    pass
+
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "Your last response was not valid JSON with keys 'answer' and 'reasoning'. "
+                        "Please reply strictly with a JSON object containing exactly these two keys."
+                    )
+                })
+                time.sleep(1)
             except Exception:
                 time.sleep(1)
-        return ''
+
+        try:
+            return json.loads(last_raw)
+        except Exception:
+            raise ValueError(f"Unable to parse JSON from LLM output after {self.max_attempts} attempts:\n{last_raw}")
 
 
 class FactOnlyClient(SimpleRagClient):
-    def call_llm(self, fact: str, no_think: bool = True) -> str:
+    def call_llm(self, fact: str, no_think: bool = False) -> str:
         system_msg = (
             "You are solving a factual verification task.\n"
             "You will be given a factual statement.\n"
             "Your task is to verify whether the statement is true, false, or uncertain based on your knowledge.\n"
-            "Respond strictly with one of the following: \"yes\", \"no\", or \"i don't know\".\n"
-            "Only English responses are allowed."
+            "Answer with 'yes' if true, 'no' if false, or 'idk' if uncertain.\n"
+            "Respond strictly in JSON format with the following keys:\n"
+            "  - 'answer': one of 'yes', 'no', 'idk'\n"
+            "  - 'reasoning': your reasoning for the answer\n"
+            "Provide the reasoning in the same language as the fact and articles.\n"
+            "Do not include any additional text outside the JSON.\n"
+            "The 'reasoning' field must be only your explanation in the same language as the input; do not include translations, quoted statements, or any additional markup.\n"
         )
-        user_prompt = f'Is the following statement factually correct: "{fact}"?\nAnswer only with "yes", "no", or "i don\'t know".'
+        user_prompt = f'Is the following statement factually correct: "{fact}"?'
         messages = self._build_messages(system_msg, user_prompt, no_think)
-        response = self._call(messages).strip().lower()
+        resp_json = self._call(messages)
+        response = json.dumps(resp_json, ensure_ascii=False)
         return user_prompt, response
 
 
 class LinkedAbstractClient(SimpleRagClient):
-    def call_llm(self, fact: str, contexts: List[str], no_think: bool = True) -> str:
+    def call_llm(self, fact: str, contexts: List[str], no_think: bool = False) -> str:
         abstracts_text = "\n\n".join(contexts)
         system_msg = (
             "You are solving a factual verification task.\n"
             "You will be given a factual statement and abstracts of Wikipedia articles.\n"
-            "Use both your own knowledge and the abstracts to determine whether the statement is factually correct.\n"
-            "If the abstracts are unhelpful, you may rely on your own knowledge.\n"
-            "Only answer \"I don't know\" if neither the abstracts nor your knowledge provide enough information.\n"
-            "Respond strictly with one of: \"yes\", \"no\", or \"i don't know\".\n"
-            "Only English responses are allowed."
+            "Use both your general knowledge and the abstracts to determine factual correctness.\n"
+            "Answer with 'yes' if true, 'no' if false, or 'idk' if uncertain.\n"
+            "Respond strictly in JSON format with the following keys:\n"
+            "  - 'answer': one of 'yes', 'no', 'idk'\n"
+            "  - 'reasoning': your reasoning for the answer\n"
+            "Provide the reasoning in the same language as the fact and abstracts.\n"
+            "Do not include any additional text outside the JSON.\n"
+            "The 'reasoning' field must be only your explanation in the same language as the input; do not include translations, quoted statements, or any additional markup.\n"
         )
         user_prompt = (
+            f'Is the following statement factually correct based on your knowledge and the abstracts below?\n\n'
             f'FACT:\n"{fact}"\n\n'
-            'Is this factually correct based on your knowledge and the abstracts below?\n'
-            'Answer with "yes", "no", or "i don\'t know".\n\n'
             f'ABSTRACTS:\n\n{abstracts_text}'
         )
         messages = self._build_messages(system_msg, user_prompt, no_think)
-        response = self._call(messages).strip().lower()
+        resp_json = self._call(messages)
+        response = json.dumps(resp_json, ensure_ascii=False)
         return user_prompt, response
 
 
 class RelevantAbstractClient(SimpleRagClient):
-    def call_llm(self, fact: str, contexts: List[str], no_think: bool = True) -> str:
+    def call_llm(self, fact: str, contexts: List[str], no_think: bool = False) -> str:
         abstracts_text = "\n\n".join(contexts)
         system_msg = (
             "You are solving a factual verification task.\n"
-            "You will be given a factual statement and relevant abstracts of Wikipedia articles.\n"
-            "Use both your general knowledge and the abstracts provided to determine whether the statement is factually correct.\n"
-            "If the abstracts are unhelpful or unrelated, you may rely on your own knowledge.\n"
-            "Only answer \"I don't know\" if neither the abstracts nor your knowledge provide enough information.\n"
-            "Try to match phrases or facts from the statement to the abstracts.\n"
-            "Respond strictly with one of: \"yes\", \"no\", or \"i don't know\".\n"
-            "Only English responses are allowed."
+            "You will be given a factual statement and abstracts of Wikipedia articles.\n"
+            "Use both your general knowledge and the abstracts to determine factual correctness.\n"
+            "Answer with 'yes' if true, 'no' if false, or 'idk' if uncertain.\n"
+            "Respond strictly in JSON format with the following keys:\n"
+            "  - 'answer': one of 'yes', 'no', 'idk'\n"
+            "  - 'reasoning': your reasoning for the answer\n"
+            "Provide the reasoning in the same language as the fact and abstracts.\n"
+            "Do not include any additional text outside the JSON.\n"
+            "The 'reasoning' field must be only your explanation in the same language as the input; do not include translations, quoted statements, or any additional markup.\n"
         )
         user_prompt = (
+            f'Is the following statement factually correct based on your knowledge and the abstracts below?\n\n'
             f'FACT:\n"{fact}"\n\n'
-            'Is this factually correct based on your knowledge and the abstracts below?\n'
-            'Answer with "yes", "no", or "i don\'t know".\n\n'
-            f'ABSTRACTS:\n\n{abstracts_text}'
+            f'RELEVANT ABSTRACTS:\n\n{abstracts_text}'
         )
         messages = self._build_messages(system_msg, user_prompt, no_think)
-        response = self._call(messages).strip().lower()
+        resp_json = self._call(messages)
+        response = json.dumps(resp_json, ensure_ascii=False)
         return user_prompt, response

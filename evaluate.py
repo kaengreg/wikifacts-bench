@@ -99,7 +99,11 @@ def main():
     client = get_rag_client(args.mode, args.model, args.api_url, args.api_key, args.failed_facts, allow_idk=args.allow_idk)
 
     predictions  = read_checkpoint(args.checkpoint)
-    remaining = [(qid, q) for qid, q in queries.items() if qid not in predictions]
+
+    remaining = [qid for qid in queries if qid not in predictions]
+    if not remaining:
+        print("No remaining facts to process.")
+        return
 
     coverage_scores = []
 
@@ -122,7 +126,8 @@ def main():
         nlp.add_pipe('pymorphy_lemmatizer')
 
     print(f"Running client class: {client.__class__.__name__}")
-    for qid, record in tqdm(remaining, desc="Processing facts", total=len(remaining)):
+    for qid in tqdm(remaining, desc="Processing facts", total=len(remaining)):
+        record = queries[qid]
         fact = record['text']
         if args.mode.strip() == "fact":
             prompt, resp_str = client.call_llm(fact)
@@ -140,6 +145,12 @@ def main():
         else:
             raise ValueError("Invalid mode")
 
+        if resp_str is None:
+            predictions[qid] = None
+            with open(args.checkpoint, 'w', encoding='utf-8') as fcp:
+                json.dump(predictions, fcp, ensure_ascii=False, indent=2)
+            continue
+
         if isinstance(resp_str, dict):
             resp_json = resp_str
         else:
@@ -148,8 +159,8 @@ def main():
         answer = resp_json['answer']
         reasoning = resp_json.get('reasoning', '')
 
-        predictions[qid] = {"answer": answer, "reasoning": reasoning}
-
+        coverage = None
+ 
         raw_keywords = record.get('keywords', [])
 
         if raw_keywords: 
@@ -165,6 +176,8 @@ def main():
             matched = norm_keywords & reason_words
             coverage = len(matched) / len(norm_keywords) if norm_keywords else 0.0
             coverage_scores.append(coverage)
+
+        predictions[qid] = {"answer": answer, "reasoning": reasoning, "coverage": coverage}
 
         with open(args.checkpoint, 'w', encoding='utf-8') as fcp:
             json.dump(predictions, fcp, ensure_ascii=False, indent=2)
@@ -190,7 +203,14 @@ def main():
     print(f"Accuracy: {accuracy:.4f}")
     print(f"Recall: {recall:.4f}")
     print(f"IDK ratio: {idk_ratio:.4f}")
-    print(f"Keywords coverage: {sum(coverage_scores) / len(coverage_scores) if coverage_scores else 0.0}")
+
+    all_coverages = [
+        rec.get("coverage", 0.0) for rec in predictions.values()
+        if isinstance(rec, dict) and rec.get("coverage") is not None
+    ]
+    
+    mean_coverage = sum(all_coverages) / len(all_coverages) if all_coverages else 0.0
+    print(f"Keywords coverage: {mean_coverage:.4f}")
     print("Stats:", dict(stats))
     print(f"Mean coverage: {coverage_scores}")
 
@@ -200,7 +220,7 @@ def main():
             "accuracy": accuracy,
             "recall (without idk)": recall,
             "idk_ratio": idk_ratio,
-            "mean_coverage": sum(coverage_scores) / len(coverage_scores) if coverage_scores else 0.0,
+            "mean_coverage": mean_coverage,
             "stats": dict(stats)
         }, fout, ensure_ascii=False, indent=2)
  

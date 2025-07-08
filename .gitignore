@@ -1,1 +1,9 @@
 /__pycache__
+
+# env
+venv/
+.venv/
+
+# output
+*corpus.jsonl
+*queries.jsonl

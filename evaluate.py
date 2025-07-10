@@ -59,6 +59,7 @@ def main():
     parser.add_argument('--outputs', type=str, default='outputs.jsonl')
     parser.add_argument('--results', type=str, default='final_results.json')
     parser.add_argument('--failed_facts', type=str, default='failed_facts.jsonl')
+    parser.add_argument('--max_threads', type=int, default=10)
     parser.add_argument('--use_fragment_retriever', action='store_true')
     parser.add_argument('--retriever_model', type=str, default='')
     parser.add_argument('--retriever_top_k', type=int, default=5)
@@ -116,7 +117,7 @@ def main():
             raise ValueError(f"Unsupported mode: {args.mode}")
         return qid, prompt, resp_str
 
-    executor = ThreadPoolExecutor(max_workers=min(10, len(remaining)))
+    executor = ThreadPoolExecutor(max_workers=min(args.max_threads, len(remaining)))
     futures = {executor.submit(llm_worker, qid): qid for qid in remaining}
     for fut in tqdm(as_completed(futures), total=len(futures), desc="Processing facts"):
         qid, prompt, resp_str = fut.result()

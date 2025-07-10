@@ -6,27 +6,11 @@ from data_loader import load_queries, load_corpus
 from collections import Counter
 from tqdm import tqdm
 from retrieval import RelevantRetriever
+from lemmatizer import MultilingualLemmatizer
 import torch
-import re  
-import spacy
-import spacy.cli
+import time
 from spacy.language import Language
-import pymorphy3
-
-class Pymorphy3Lemmatizer:
-    """SpaCy pipeline component for lemmatization using PyMorphy3."""
-    def __init__(self):
-        self.morph = pymorphy3.MorphAnalyzer()
-    def __call__(self, doc):
-        for token in doc:
-            if token.is_alpha:
-                token.lemma_ = self.morph.parse(token.text)[0].normal_form
-        return doc
-
-@Language.factory("pymorphy_lemmatizer")
-def create_pymorphy_lemmatizer(nlp, name):
-    return Pymorphy3Lemmatizer()
-
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 def read_checkpoint(path: str):
     """Reads checkpoint file and load already processed facts"""
@@ -82,6 +66,8 @@ def main():
     parser.add_argument('--retriever_pooling', choices=['mean', 'cls'], default='mean')
     args = parser.parse_args()
 
+    start = time.time()
+
     for path in [args.checkpoint, args.outputs, args.results]:
         os.makedirs(os.path.dirname(path), exist_ok=True) if os.path.dirname(path) else None
 
@@ -107,26 +93,10 @@ def main():
 
     coverage_scores = []
 
-    model_name = f"{args.lang}_core_news_sm"
-    try:
-        nlp = spacy.load(model_name)
-    except OSError:
-        print(f"Model {model_name} not found. Downloading…")
-        spacy.cli.download(model_name)
-        try:
-            nlp = spacy.load(model_name)
-        except OSError:
-            nlp = spacy.blank(args.lang)
-            nlp.add_pipe('attribute_ruler')
-            nlp.add_pipe('lemmatizer', config={'mode':'rule'})
-
-    nlp.initialize()
-
-    if args.lang.lower() in ('ru', 'uk'):
-        nlp.add_pipe('pymorphy_lemmatizer')
+    lemmatizer = MultilingualLemmatizer(args.lang)
 
     print(f"Running client class: {client.__class__.__name__}")
-    for qid in tqdm(remaining, desc="Processing facts", total=len(remaining)):
+    def llm_worker(qid):
         record = queries[qid]
         fact = record['text']
         if args.mode.strip() == "fact":
@@ -143,49 +113,46 @@ def main():
                 abstracts = resolve_context(record.get("relevant articles", []), corpus)
             prompt, resp_str = client.call_llm(fact, abstracts)
         else:
-            raise ValueError("Invalid mode")
+            raise ValueError(f"Unsupported mode: {args.mode}")
+        return qid, prompt, resp_str
 
+    executor = ThreadPoolExecutor(max_workers=min(10, len(remaining)))
+    futures = {executor.submit(llm_worker, qid): qid for qid in remaining}
+    for fut in tqdm(as_completed(futures), total=len(futures), desc="Processing facts"):
+        qid, prompt, resp_str = fut.result()
+        record = queries[qid]
         if resp_str is None:
             predictions[qid] = None
             with open(args.checkpoint, 'w', encoding='utf-8') as fcp:
                 json.dump(predictions, fcp, ensure_ascii=False, indent=2)
             continue
-
         if isinstance(resp_str, dict):
             resp_json = resp_str
         else:
             resp_json = json.loads(resp_str)
-
         answer = resp_json['answer']
         reasoning = resp_json.get('reasoning', '')
-
         coverage = None
- 
         raw_keywords = record.get('keywords', [])
-
-        if raw_keywords: 
+        if raw_keywords:
             norm_keywords = set()
             for kw in raw_keywords:
-                for token in nlp(kw):
+                for token in lemmatizer.nlp(kw):
                     if token.is_alpha:
                         norm_keywords.add(token.lemma_.lower())
-
-            reason_doc = nlp(reasoning or "")
+            reason_doc = lemmatizer.nlp(reasoning or "")
             reason_words = set(tok.lemma_.lower() for tok in reason_doc if tok.is_alpha)
-
             matched = norm_keywords & reason_words
             coverage = len(matched) / len(norm_keywords) if norm_keywords else 0.0
             coverage_scores.append(coverage)
-
         predictions[qid] = {"answer": answer, "reasoning": reasoning, "coverage": coverage}
-
         with open(args.checkpoint, 'w', encoding='utf-8') as fcp:
             json.dump(predictions, fcp, ensure_ascii=False, indent=2)
         with open(args.outputs, 'a', encoding='utf-8') as fout:
             fout.write(json.dumps({"prompt": prompt, "prediction": answer, "reasoning": reasoning, 'output': resp_str}, ensure_ascii=False) + '\n')
-
-    all_preds = []
+    executor.shutdown()
     
+    all_preds = []
     for qid in queries:
         rec = predictions[qid]
         if isinstance(rec, dict):
@@ -223,7 +190,10 @@ def main():
             "mean_coverage": mean_coverage,
             "stats": dict(stats)
         }, fout, ensure_ascii=False, indent=2)
- 
+    
+    end = time.time()
+
+    print(f"Overall time: {end - start}")
 
 if __name__ == "__main__":
     main()

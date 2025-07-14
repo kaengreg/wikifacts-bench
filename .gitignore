@@ -1,2 +1,10 @@
 /__pycache__
 .DS_Store
+
+# env
+venv/
+.venv/
+
+# output
+*corpus.jsonl
+*queries.jsonl

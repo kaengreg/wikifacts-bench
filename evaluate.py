@@ -180,7 +180,6 @@ def main():
     mean_coverage = sum(all_coverages) / len(all_coverages) if all_coverages else 0.0
     print(f"Keywords coverage: {mean_coverage:.4f}")
     print("Stats:", dict(stats))
-    print(f"Mean coverage: {coverage_scores}")
 
     with open(args.results, 'w', encoding='utf-8') as fout:
         json.dump({

@@ -19,10 +19,24 @@ class Pymorphy3Lemmatizer:
 def create_pymorphy_lemmatizer(nlp, name):
     return Pymorphy3Lemmatizer()
 
+class ChineseLemmatizer:
+    def __init__(self, nlp):
+        pass
+    
+    def __call__(self, doc):
+        for token in doc:
+            token.lemma_ = token.text
+        return doc
+
+@Language.factory("chinese_lemmatizer")
+def create_chinese_lemmatizer(nlp, name):
+    return ChineseLemmatizer(nlp)
+
 class MultilingualLemmatizer:
     def __init__(self, lang: str):
-        model_news = f"{lang}_core_news_sm"
-        model_web  = f"{lang}_core_web_sm"
+        self.lang = lang
+        model_news = f"{self.lang}_core_news_sm"
+        model_web  = f"{self.lang}_core_web_sm"
 
         try:
             self.nlp = spacy.load(model_news)
@@ -32,25 +46,26 @@ class MultilingualLemmatizer:
             except OSError:
                 print(f"Neither {model_news} nor {model_web} found. Downloading {model_news}…")
                 try:
-                    spacy.cli.download(model_news)
-                    self.nlp = spacy.load(model_news)
+                    spacy.cli.download(model_web)
+                    self.nlp = spacy.load(model_web)
                 except Exception:
-                    print(f"Failed to download {model_news}. Trying download of {model_web}…")
-                    try:
-                        spacy.cli.download(model_web)
-                        self.nlp = spacy.load(model_web)
-                    except Exception:
-                        print(f"Failed to download both models. Using blank pipeline.")
-                        self.nlp = spacy.blank(lang)
-                        self.nlp.add_pipe('attribute_ruler')
-                        self.nlp.add_pipe('lemmatizer', config={'mode': 'rule'})
-                        self.nlp.initialize()
+                    print(f"Failed to download both models. Using blank pipeline.")
+                    self.nlp = spacy.blank(lang)
+                    self.nlp.add_pipe('attribute_ruler')
+                    self.nlp.add_pipe('lemmatizer', config={'mode': 'rule'})
+                    self.nlp.initialize()
 
         if lang.lower() in ('ru', 'uk'):
             self.nlp.add_pipe('pymorphy_lemmatizer')
+        elif self.lang == 'zh':
+            self.nlp.add_pipe('chinese_lemmatizer')
+
 
 
     def lemmatize_text(self, text: str) -> str:
         doc = self.nlp(text)
-        lemmas = [tok.lemma_ for tok in doc if (tok.is_alpha or tok.is_digit) and len(tok) > 1]
+        if self.lang == 'zh':
+            lemmas = [tok.lemma_ for tok in doc if (tok.is_alpha or tok.is_digit)]
+        else:
+            lemmas = [tok.lemma_ for tok in doc if (tok.is_alpha or tok.is_digit) and len(tok) > 1]
         return ' '.join(lemmas)

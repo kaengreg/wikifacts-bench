@@ -45,18 +45,18 @@ def get_wikipedia_article(link_url):
     m = re.match(r"https?://([a-z]{2})\.wikipedia\.org/wiki/(.+)", unquote(link_url))
     if not m:
         return ""
-
     lang, title = m.groups()
     api_url = f"https://{lang}.wikipedia.org/w/api.php"
     params = {
         "action": "query",
         "prop": "extracts",
-        "explaintext": True,
+        "explaintext": 1,             
         "format": "json",
         "titles": title
     }
-    response = requests.get(api_url, params=params)
-    data = response.json()
+ 
+    resp = requests.get(api_url, params=params, headers={"User-Agent": "wikifacts-bench/1.0"})
+    data = resp.json()
     pages = data.get('query', {}).get('pages', {})
     page = next(iter(pages.values()))
     article_text = page.get('extract', '')

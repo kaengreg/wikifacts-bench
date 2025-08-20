@@ -52,7 +52,8 @@ def get_wikipedia_article(link_url):
         "prop": "extracts",
         "explaintext": 1,             
         "format": "json",
-        "titles": title
+        "titles": title,
+        'redirects': 1
     }
  
     resp = requests.get(api_url, params=params, headers={"User-Agent": "wikifacts-bench/1.0"})
@@ -66,7 +67,6 @@ def get_wikipedia_article(link_url):
 def extract_article_title(url):
     parts = url.split('/wiki/')
     return parts[1] if len(parts) > 1 else None
-
 
 
 def main(args):
@@ -159,14 +159,42 @@ def main(args):
                     if url in processed_links
                 ]
 
-                title_words = set()
-                for title in article_titles:
-                    decoded = unquote(title).replace('_', ' ')
-                    title_words.update(re.findall(r'\w+', decoded.lower(), flags=re.UNICODE))
+                if args.lang in ('vi', 'zh'):
+                    title_tokens = []
+                    for title in article_titles:
+                        if not title:
+                            continue
+                        decoded = unquote(title).replace('_', ' ')
+                        doc_t = lemmatizer.nlp(decoded)
+                        title_tokens.extend(
+                            t.lemma_.lower() for t in doc_t if any(ch.isalnum() for ch in t.text)
+                        )
 
-                fact_words = set(re.findall(r'\w+', fact['text'].lower(), flags=re.UNICODE))
-                normalized_title = set(lemmatizer.lemmatize_text(' '.join(title_words)).split())
-                normalized_fact = set(lemmatizer.lemmatize_text(' '.join(fact_words)).split())
+                    doc_f = lemmatizer.nlp(fact['text'] or "")
+
+                    fact_tokens_raw = [
+                        t.lemma_.lower() for t in doc_f if any(ch.isalnum() for ch in t.text)
+                    ]
+                    
+                    fact_tokens = []
+                    for tok in fact_tokens_raw:
+                        fact_tokens.append(tok)
+                        if '_' in tok:
+                            fact_tokens.extend(p for p in tok.split('_') if p)
+                else:
+                    title_words_list = []
+                    for title in article_titles:
+                        if not title:
+                            continue
+                        decoded = unquote(title).replace('_', ' ')
+                        title_words_list.extend(re.findall(r'\w+', decoded.lower(), flags=re.UNICODE))
+
+                    fact_words_list = re.findall(r'\w+', (fact['text'] or '').lower(), flags=re.UNICODE)
+                    title_tokens = lemmatizer.lemmatize_text(' '.join(title_words_list)).split()
+                    fact_tokens = lemmatizer.lemmatize_text(' '.join(fact_words_list)).split()
+
+                normalized_title = set(title_tokens)
+                normalized_fact = set(fact_tokens)
                 keywords = sorted(normalized_title - normalized_fact)
 
                 entry = {

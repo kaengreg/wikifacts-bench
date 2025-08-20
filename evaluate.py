@@ -11,6 +11,7 @@ import torch
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from deep_translator import GoogleTranslator
+import unicodedata
 
 def read_checkpoint(path: str):
     """Reads checkpoint file and load already processed facts"""
@@ -80,12 +81,15 @@ def main():
 
     translator = None
     if args.translate_prompts:
-        translator = GoogleTranslator(source='en', target=args.lang)
+        if args.lang == 'zh':
+            translator = GoogleTranslator(source='en', target='zh-CN')
+        else:
+            translator = GoogleTranslator(source='en', target=args.lang)
 
     for path in [args.checkpoint, args.outputs, args.results]:
         os.makedirs(os.path.dirname(path), exist_ok=True) if os.path.dirname(path) else None
 
-    queries = load_queries(args.dataset, f"{args.lang}_queries")
+    queries = load_queries(args.dataset, f"{args.lang}_queries").items()
     corpus = load_corpus(args.dataset, f"{args.lang}_corpus")
 
     if args.use_fragment_retriever:
@@ -151,29 +155,58 @@ def main():
                 resp_json = resp_str
             else:
                 resp_json = json.loads(resp_str)
+
             answer = resp_json['answer'].lower()
             reasoning = resp_json.get('reasoning', '')
+
             coverage = None
             raw_keywords = record.get('keywords', [])
             if raw_keywords:
-                norm_keywords = set()
-                for kw in raw_keywords:
-                    for token in lemmatizer.nlp(kw):
-                        if token.is_alpha:
-                            norm_keywords.add(token.lemma_.lower())
-                reason_doc = lemmatizer.nlp(reasoning or "")
-                reason_words = set(tok.lemma_.lower() for tok in reason_doc if tok.is_alpha)
+        
+                if args.lang in ('vi', 'zh'):
+                    norm_keywords = {
+                        unicodedata.normalize("NFC", kw or "").strip().lower().replace(' ', '_')
+                        for kw in raw_keywords if kw and kw.strip()
+                    }
+
+                    reason_doc = lemmatizer.nlp(reasoning or "")
+                    lemmas = [
+                        unicodedata.normalize("NFC", t.lemma_ or "")
+                        for t in reason_doc
+                        if any(ch.isalnum() for ch in t.text)
+                    ]
+
+                   
+                    reason_words = set(lemmas)
+                    
+                else:
+                    norm_keywords = set()
+                    for kw in raw_keywords:
+                        for t in lemmatizer.nlp(kw or ""):
+                            if t.is_alpha or t.is_digit:
+                                norm_keywords.add(unicodedata.normalize("NFC", t.lemma_ or ""))
+
+                    reason_doc = lemmatizer.nlp(reasoning or "")
+                    reason_words = set(
+                        unicodedata.normalize("NFC", t.lemma_ or "")
+                        for t in reason_doc
+                        if t.is_alpha or t.is_digit
+                    )
+
                 matched = norm_keywords & reason_words
                 coverage = len(matched) / len(norm_keywords) if norm_keywords else 0.0
                 coverage_scores.append(coverage)
+            else:
+                coverage = None
+                
             predictions[qid] = {"answer": answer, "reasoning": reasoning, "coverage": coverage}
+
             with open(args.checkpoint, 'w', encoding='utf-8') as fcp:
                 json.dump(predictions, fcp, ensure_ascii=False, indent=2)
             with open(args.outputs, 'a', encoding='utf-8') as fout:
                 fout.write(json.dumps({"prompt": prompt, 
                                        "prediction": answer, 
-                                       "reasoning": reasoning, 
-                                       'output': resp_str}, ensure_ascii=False) + '\n')
+                                       "reasoning": reasoning, 'output': resp_str}, ensure_ascii=False) + '\n')
         executor.shutdown()
     
     all_preds = []
@@ -190,8 +223,12 @@ def main():
         'en': {'yes': 'yes', 'no': 'no', 'idk': 'idk'},
         'de': {'ja': 'yes', 'nein': 'no', 'weiß nicht': 'idk', 'weiss nicht': 'idk'},
         'fr': {'oui': 'yes', 'non': 'no', 'je ne sais pas': 'idk'},
+        'pt': {'sim': 'yes', 'não': 'no', 'nao': 'no', 'não sei': 'idk', 'nao sei': 'idk'},
         'zh': {'是': 'yes', '否': 'no', '不知道': 'idk'},
-        'pt': {'sim': 'yes', 'não': 'no', 'nao': 'no', 'não sei': 'idk', 'nao sei': 'idk'}
+        'uk': {'так': 'yes', 'ні': 'no', 'не знаю': 'idk', 'ni': 'no'},
+        'nl': {'ja': 'yes', 'nee': 'no', 'ik weet het niet': 'idk', 'weet ik niet': 'idk', 'weet niet': 'idk'},
+        'sv': {'ja': 'yes', 'nej': 'no', 'vet inte': 'idk'},
+        'vi': {'có': 'yes', 'co': 'yes', 'không': 'no', 'khong': 'no', 'không biết': 'idk', 'khong biet': 'idk'}
     }
     map_for_lang = answer_map.get(args.lang, answer_map.get('en', {}))
     
@@ -200,7 +237,7 @@ def main():
         if isinstance(p, str):
             key = p.strip().lower()
         else:
-            key = 'idk'  
+            key = 'None'  
         normalized_preds.append(map_for_lang.get(key, key))
     all_preds = normalized_preds
 
@@ -219,7 +256,6 @@ def main():
         rec.get("coverage", 0.0) for rec in predictions.values()
         if isinstance(rec, dict) and rec.get("coverage") is not None
     ]
-    
     mean_coverage = sum(all_coverages) / len(all_coverages) if all_coverages else 0.0
     print(f"Keywords coverage: {mean_coverage:.4f}")
     print("Stats:", dict(stats))

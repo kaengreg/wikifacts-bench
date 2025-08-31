@@ -10,13 +10,15 @@ class RelevantRetriever:
     def __init__(self,
             model_name: str,
             maxlen: str, 
-            batch_size: int,
             pooling: str,
             splitter: str,
-            device: str = 'cuda'
+            device: str = 'cuda',
+            batch_size: int = 16,
     ): 
         assert pooling in ("mean", "cls"), "pooling must be either mean or cls"
         assert splitter in ("sentence", "paragraph"), ""
+
+        self.splitter = splitter 
 
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.model, self.tokenizer = self.load_model(model_name, device)
@@ -24,6 +26,7 @@ class RelevantRetriever:
         self.maxlen = maxlen
         self.batch_size = batch_size
         self.pooling = pooling.lower()
+        
 
     def load_model(self, model_name: str, device: str = 'cuda'):
         model = AutoModel.from_pretrained(model_name).to(device).eval()
@@ -39,20 +42,28 @@ class RelevantRetriever:
 
     def split(self, text: str) -> list[str]:
         if self.splitter == "sentence":
-            return self._split_sentences(text)
-        return self._split_paragraphs(text)
+            return self.split_sentence(text)
+        return self.split_paragraphs(text)
+
+    def _average_pool(self, model_output: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+        last_hidden_states = model_output.last_hidden_state
+        last_hidden = last_hidden_states.masked_fill(~attention_mask[..., None].bool(), 0.0)
+        return last_hidden.sum(dim=1) / attention_mask.sum(dim=1)[..., None]
+
+    def _cls_pool(self, model_output: torch.Tensor) -> torch.Tensor:
+        return model_output.last_hidden_state[:, 0, :]
 
     def get_embeddings(self, texts: list[str]) -> np.ndarray:
         embeddings = []
         for i in tqdm(range(0, len(texts), self.batch_size), desc="Processing Batches"):
             batch_texts = texts[i:i + self.batch_size]
-            batch_dict = self.tokenizer(batch_texts, max_length=self.max_len, padding=True, truncation=True,
+            batch_dict = self.tokenizer(batch_texts, max_length=self.maxlen, padding=True, truncation=True,
                                         return_tensors='pt')
             batch_dict = {k: v.to(self.device) for k, v in batch_dict.items()}
 
             with torch.no_grad():
                 outputs = self.model(**batch_dict)
-            if self.pooling == 'average':
+            if self.pooling == 'mean':
                 batch_embeddings = self._average_pool(outputs, batch_dict['attention_mask'])
             elif self.pooling == 'cls':
                 batch_embeddings = self._cls_pool(outputs)

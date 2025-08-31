@@ -71,8 +71,9 @@ def main():
     parser.add_argument('--failed_facts', type=str, default='failed_facts.jsonl')
     parser.add_argument('--max_threads', type=int, default=10)
     parser.add_argument('--use_fragment_retriever', action='store_true')
-    parser.add_argument('--retriever_model', type=str, default='')
+    parser.add_argument('--retriever_model', type=str, default='intfloat/multilingual-e5-large')
     parser.add_argument('--retriever_top_k', type=int, default=5)
+    parser.add_argument('--retriever_maxlen', type=int, default=512)
     parser.add_argument('--retriever_splitter', choices=['sentence', 'paragraph'], default='sentence')
     parser.add_argument('--retriever_pooling', choices=['mean', 'cls'], default='mean')
     args = parser.parse_args()
@@ -89,7 +90,7 @@ def main():
     for path in [args.checkpoint, args.outputs, args.results]:
         os.makedirs(os.path.dirname(path), exist_ok=True) if os.path.dirname(path) else None
 
-    queries = load_queries(args.dataset, f"{args.lang}_queries").items()
+    queries = load_queries(args.dataset, f"{args.lang}_queries")
     corpus = load_corpus(args.dataset, f"{args.lang}_corpus")
 
     if args.use_fragment_retriever:
@@ -97,7 +98,8 @@ def main():
             model_name=args.retriever_model,
             device='cuda' if torch.cuda.is_available() else 'cpu',
             pooling=args.retriever_pooling,
-            splitter=args.retriever_splitter
+            splitter=args.retriever_splitter,
+            maxlen=args.retriever_maxlen
         )
         
     client = get_rag_client(args.mode, 

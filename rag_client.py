@@ -35,26 +35,16 @@ class SimpleRagClient:
         
         if text in self._translations_cache:
             return self._translations_cache[text]
-        
-        mask_map = {
-            "'answer'": "__ans__",
-            '"answer"': "__ans__",
-            "'reasoning'": "__rsp__",
-            '"reasoning"': "__rsp__"
-        }
-
-        masked_text = text
-
-        for raw, mask in mask_map.items():
-            masked_text = masked_text.replace(raw, mask)
+            
+        masked_text = re.sub(r"(?i)['\"]answer['\"]", "__ANS__", text)
+        masked_text = re.sub(r"(?i)['\"]reasoning['\"]", "__RSP__", masked_text)
         try:
             translated_masked = self.translator.translate(masked_text)
         except Exception:
             translated = text
         else:
-            for raw, mask in mask_map.items():
-                translated_masked = translated_masked.replace(mask, raw)
-            translated = translated_masked
+            translated = re.sub(r"(?i)__ANS__", '"answer"', translated_masked)
+            translated = re.sub(r"(?i)__RSP__", '"reasoning"', translated)
 
         self._translations_cache[text] = translated
         return translated
@@ -65,6 +55,64 @@ class SimpleRagClient:
         text = text.replace("one of 'yes', 'no', 'idk'", "one of 'yes', 'no'")
         text = text.replace(", or 'idk'", "")
         return text
+    
+    def _strip_think(self, text: str) -> str:
+        return re.sub(r"(?is)<think>.*?</think>", "", text)
+
+    def _find_json_object(self, s: str) -> str:
+        objs = []
+        level = 0
+        start = None
+        in_string = False
+        quote_char = ""
+        esc = False
+        for i, ch in enumerate(s):
+            if in_string:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == quote_char:
+                    in_string = False
+            else:
+                if ch in ('"', "'"):
+                    in_string = True
+                    quote_char = ch
+                elif ch == '{':
+                    if level == 0:
+                        start = i
+                    level += 1
+                elif ch == '}':
+                    if level > 0:
+                        level -= 1
+                        if level == 0 and start is not None:
+                            objs.append(s[start:i+1])
+                            start = None
+        return objs
+
+    def _extract_json_dict(self, text: str) -> Optional[dict]:
+        if not text:
+            return None
+        
+        text = self._strip_think(text).strip()
+        print("THINK BLOCK STRIPPED:", text)
+
+        for pattern in (r"(?is)```json\s*(\{.*?\})\s*```", r"(?is)```\s*(\{.*?\})\s*```"):
+            m = re.search(pattern, text)
+            if m:
+                try:
+                    d = json.loads(m.group(1))
+                    return d
+                except Exception:
+                    pass
+        candidates = self._find_json_object(text)
+        for cand in reversed(candidates):
+            try:
+                d = json.loads(cand)
+                return d
+            except Exception:
+                continue
+        return None
 
     def _build_messages(self, system_instruction: str, user_prompt: str, no_think: bool, few_shots: Optional[List[dict]] = None) -> List[dict]:
         if no_think:
@@ -92,19 +140,18 @@ class SimpleRagClient:
                     top_p=0.9,
                     timeout=self.timeout
                 )
-                raw = response.choices[0].message.content.strip()
-                last_raw = raw
+                raw = response.choices[0].message.content.strip() if response and response.choices else ""
+                if raw is None:
+                    raw = ""
+                raw = raw.strip()
 
-                m = re.search(r"```json\s*(\{[\s\S]*?\})\s*```|(\{[\s\S]*?\})", raw, flags=re.DOTALL)
-                candidate = m.group(1) or m.group(2) if m else raw
+                last_raw = raw 
 
-                try:
-                    resp_json = json.loads(candidate)
-                    if 'answer' in resp_json and 'reasoning' in resp_json:
-                        return resp_json
-                except json.JSONDecodeError:
-                    pass
-
+                parsed = self._extract_json_dict(raw)
+                print(parsed)
+                if parsed is not None:
+                    return parsed 
+            
                 fallback_content = (
                     "Your last response was not valid JSON with keys 'answer' and 'reasoning'. "
                     "Please reply strictly with a JSON object containing exactly these two keys."
@@ -119,14 +166,11 @@ class SimpleRagClient:
             except Exception:
                 time.sleep(1)
 
-        try:
-            return json.loads(last_raw)
-        except Exception:
-            return None
+        return self._extract_json_dict(last_raw) if last_raw else None
 
 
 class FactOnlyClient(SimpleRagClient):
-    def call_llm(self, fact: str, no_think: bool = False) -> str:
+    def call_llm(self, fact: str, no_think: bool = True) -> str:
         template_sys = (
             "You are solving a factual verification task.\n"
             "You will be given a factual statement or a question that may start with 'Did you know...'.\n"
@@ -186,7 +230,7 @@ class FactOnlyClient(SimpleRagClient):
 
 
 class LinkedAbstractClient(SimpleRagClient):
-    def call_llm(self, fact: str, contexts: List[str], no_think: bool = False) -> str:
+    def call_llm(self, fact: str, contexts: List[str], no_think: bool = True) -> str:
         abstracts_text = "\n\n".join(contexts)
         template_sys = (
             "You are solving a factual verification task.\n"
@@ -252,7 +296,7 @@ class LinkedAbstractClient(SimpleRagClient):
 
 
 class RelevantAbstractClient(SimpleRagClient):
-    def call_llm(self, fact: str, contexts: List[str], no_think: bool = False) -> str:
+    def call_llm(self, fact: str, contexts: List[str], no_think: bool = True) -> str:
         abstracts_text = "\n\n".join(contexts)
         template_sys = (
             "You are solving a factual verification task.\n"

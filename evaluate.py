@@ -9,8 +9,9 @@ from retrieval import RelevantRetriever
 from lemmatizer import MultilingualLemmatizer
 import torch
 import time
-from spacy.language import Language
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from deep_translator import GoogleTranslator
+import unicodedata
 
 def read_checkpoint(path: str):
     """Reads checkpoint file and load already processed facts"""
@@ -33,9 +34,16 @@ def resolve_context(article_ids, corpus):
             print(f"WARNING: Article ID '{aid}' not found in corpus.")
     return contexts
     
-def get_rag_client(mode, model_name, api_url, api_key,  failed_facts_path, allow_idk=True):
+def get_rag_client(mode, model_name, api_url, api_key,  failed_facts_path, translator, use_few_shots, allow_idk=True):
     """Selects RAG-client mode"""
-    base_kwargs = dict(model_name=model_name, api_url=api_url, api_key=api_key, allow_idk=allow_idk, failed_facts_path=failed_facts_path)
+    base_kwargs = dict(model_name=model_name, 
+                       api_url=api_url, 
+                       api_key=api_key, 
+                       failed_facts_path=failed_facts_path, 
+                       translator=translator,
+                       use_few_shots=use_few_shots,
+                       allow_idk=allow_idk)
+    
     if mode == "fact":
         return FactOnlyClient(**base_kwargs)
     elif mode == "linked":
@@ -55,19 +63,29 @@ def main():
     parser.add_argument('--api_key', type=str, default='')
     parser.add_argument('--mode', choices=['fact', 'linked', 'relevant'], default='fact')
     parser.add_argument('--allow_idk', action='store_true')
+    parser.add_argument('--translate_prompts', action='store_true')
+    parser.add_argument('--use_few_shots', action='store_true')
     parser.add_argument('--checkpoint', type=str, default='checkpoint.json')
     parser.add_argument('--outputs', type=str, default='outputs.jsonl')
     parser.add_argument('--results', type=str, default='final_results.json')
     parser.add_argument('--failed_facts', type=str, default='failed_facts.jsonl')
     parser.add_argument('--max_threads', type=int, default=10)
     parser.add_argument('--use_fragment_retriever', action='store_true')
-    parser.add_argument('--retriever_model', type=str, default='')
+    parser.add_argument('--retriever_model', type=str, default='intfloat/multilingual-e5-large')
     parser.add_argument('--retriever_top_k', type=int, default=5)
+    parser.add_argument('--retriever_maxlen', type=int, default=512)
     parser.add_argument('--retriever_splitter', choices=['sentence', 'paragraph'], default='sentence')
     parser.add_argument('--retriever_pooling', choices=['mean', 'cls'], default='mean')
     args = parser.parse_args()
 
     start = time.time()
+
+    translator = None
+    if args.translate_prompts:
+        if args.lang == 'zh':
+            translator = GoogleTranslator(source='en', target='zh-CN')
+        else:
+            translator = GoogleTranslator(source='en', target=args.lang)
 
     for path in [args.checkpoint, args.outputs, args.results]:
         os.makedirs(os.path.dirname(path), exist_ok=True) if os.path.dirname(path) else None
@@ -80,17 +98,24 @@ def main():
             model_name=args.retriever_model,
             device='cuda' if torch.cuda.is_available() else 'cpu',
             pooling=args.retriever_pooling,
-            splitter=args.retriever_splitter
+            splitter=args.retriever_splitter,
+            maxlen=args.retriever_maxlen
         )
         
-    client = get_rag_client(args.mode, args.model, args.api_url, args.api_key, args.failed_facts, allow_idk=args.allow_idk)
+    client = get_rag_client(args.mode, 
+                            args.model,
+                            args.api_url, 
+                            args.api_key, 
+                            args.failed_facts, 
+                            allow_idk=args.allow_idk, 
+                            translator=translator, 
+                            use_few_shots=args.use_few_shots)
 
     predictions  = read_checkpoint(args.checkpoint)
 
     remaining = [qid for qid in queries if qid not in predictions]
     if not remaining:
-        print("No remaining facts to process.")
-        return
+        print("No remaining facts to process. Computing metrics from existing predictions...")
 
     coverage_scores = []
 
@@ -117,41 +142,74 @@ def main():
             raise ValueError(f"Unsupported mode: {args.mode}")
         return qid, prompt, resp_str
 
-    executor = ThreadPoolExecutor(max_workers=min(args.max_threads, len(remaining)))
-    futures = {executor.submit(llm_worker, qid): qid for qid in remaining}
-    for fut in tqdm(as_completed(futures), total=len(futures), desc="Processing facts"):
-        qid, prompt, resp_str = fut.result()
-        record = queries[qid]
-        if resp_str is None:
-            predictions[qid] = None
+    if remaining:
+        executor = ThreadPoolExecutor(max_workers=min(args.max_threads, len(remaining)))
+        futures = {executor.submit(llm_worker, qid): qid for qid in remaining}
+        for fut in tqdm(as_completed(futures), total=len(futures), desc="Processing facts"):
+            qid, prompt, resp_str = fut.result()
+            record = queries[qid]
+            if resp_str is None:
+                predictions[qid] = None
+                with open(args.checkpoint, 'w', encoding='utf-8') as fcp:
+                    json.dump(predictions, fcp, ensure_ascii=False, indent=2)
+                continue
+            if isinstance(resp_str, dict):
+                resp_json = resp_str
+            else:
+                resp_json = json.loads(resp_str)
+
+            answer = resp_json['answer'].lower()
+            reasoning = resp_json.get('reasoning', '')
+
+            coverage = None
+            raw_keywords = record.get('keywords', [])
+            if raw_keywords:
+        
+                if args.lang in ('vi', 'zh'):
+                    norm_keywords = {
+                        unicodedata.normalize("NFC", kw or "").strip().lower().replace(' ', '_')
+                        for kw in raw_keywords if kw and kw.strip()
+                    }
+
+                    reason_doc = lemmatizer.nlp(reasoning or "")
+                    lemmas = [
+                        unicodedata.normalize("NFC", t.lemma_ or "")
+                        for t in reason_doc
+                        if any(ch.isalnum() for ch in t.text)
+                    ]
+
+                   
+                    reason_words = set(lemmas)
+                    
+                else:
+                    norm_keywords = set()
+                    for kw in raw_keywords:
+                        for t in lemmatizer.nlp(kw or ""):
+                            if t.is_alpha or t.is_digit:
+                                norm_keywords.add(unicodedata.normalize("NFC", t.lemma_ or ""))
+
+                    reason_doc = lemmatizer.nlp(reasoning or "")
+                    reason_words = set(
+                        unicodedata.normalize("NFC", t.lemma_ or "")
+                        for t in reason_doc
+                        if t.is_alpha or t.is_digit
+                    )
+
+                matched = norm_keywords & reason_words
+                coverage = len(matched) / len(norm_keywords) if norm_keywords else 0.0
+                coverage_scores.append(coverage)
+            else:
+                coverage = None
+                
+            predictions[qid] = {"answer": answer, "reasoning": reasoning, "coverage": coverage}
+
             with open(args.checkpoint, 'w', encoding='utf-8') as fcp:
                 json.dump(predictions, fcp, ensure_ascii=False, indent=2)
-            continue
-        if isinstance(resp_str, dict):
-            resp_json = resp_str
-        else:
-            resp_json = json.loads(resp_str)
-        answer = resp_json['answer']
-        reasoning = resp_json.get('reasoning', '')
-        coverage = None
-        raw_keywords = record.get('keywords', [])
-        if raw_keywords:
-            norm_keywords = set()
-            for kw in raw_keywords:
-                for token in lemmatizer.nlp(kw):
-                    if token.is_alpha:
-                        norm_keywords.add(token.lemma_.lower())
-            reason_doc = lemmatizer.nlp(reasoning or "")
-            reason_words = set(tok.lemma_.lower() for tok in reason_doc if tok.is_alpha)
-            matched = norm_keywords & reason_words
-            coverage = len(matched) / len(norm_keywords) if norm_keywords else 0.0
-            coverage_scores.append(coverage)
-        predictions[qid] = {"answer": answer, "reasoning": reasoning, "coverage": coverage}
-        with open(args.checkpoint, 'w', encoding='utf-8') as fcp:
-            json.dump(predictions, fcp, ensure_ascii=False, indent=2)
-        with open(args.outputs, 'a', encoding='utf-8') as fout:
-            fout.write(json.dumps({"prompt": prompt, "prediction": answer, "reasoning": reasoning, 'output': resp_str}, ensure_ascii=False) + '\n')
-    executor.shutdown()
+            with open(args.outputs, 'a', encoding='utf-8') as fout:
+                fout.write(json.dumps({"prompt": prompt, 
+                                       "prediction": answer, 
+                                       "reasoning": reasoning, 'output': resp_str}, ensure_ascii=False) + '\n')
+        executor.shutdown()
     
     all_preds = []
     for qid in queries:
@@ -160,6 +218,30 @@ def main():
             all_preds.append(rec["answer"])
         else:
             all_preds.append(rec)
+
+    # normalize localized answers to English for metrics
+    answer_map = {
+        'ru': {'да': 'yes', 'нет': 'no', 'не знаю': 'idk'},
+        'en': {'yes': 'yes', 'no': 'no', 'idk': 'idk'},
+        'de': {'ja': 'yes', 'nein': 'no', 'weiß nicht': 'idk', 'weiss nicht': 'idk'},
+        'fr': {'oui': 'yes', 'non': 'no', 'je ne sais pas': 'idk'},
+        'pt': {'sim': 'yes', 'não': 'no', 'nao': 'no', 'não sei': 'idk', 'nao sei': 'idk'},
+        'zh': {'是': 'yes', '否': 'no', '不知道': 'idk'},
+        'uk': {'так': 'yes', 'ні': 'no', 'не знаю': 'idk', 'ni': 'no'},
+        'nl': {'ja': 'yes', 'nee': 'no', 'ik weet het niet': 'idk', 'weet ik niet': 'idk', 'weet niet': 'idk'},
+        'sv': {'ja': 'yes', 'nej': 'no', 'vet inte': 'idk'},
+        'vi': {'có': 'yes', 'co': 'yes', 'không': 'no', 'khong': 'no', 'không biết': 'idk', 'khong biet': 'idk'}
+    }
+    map_for_lang = answer_map.get(args.lang, answer_map.get('en', {}))
+    
+    normalized_preds = []
+    for p in all_preds:
+        if isinstance(p, str):
+            key = p.strip().lower()
+        else:
+            key = 'None'  
+        normalized_preds.append(map_for_lang.get(key, key))
+    all_preds = normalized_preds
 
     stats = Counter(all_preds)
     tp = stats['yes']
@@ -176,7 +258,6 @@ def main():
         rec.get("coverage", 0.0) for rec in predictions.values()
         if isinstance(rec, dict) and rec.get("coverage") is not None
     ]
-    
     mean_coverage = sum(all_coverages) / len(all_coverages) if all_coverages else 0.0
     print(f"Keywords coverage: {mean_coverage:.4f}")
     print("Stats:", dict(stats))
@@ -184,10 +265,10 @@ def main():
     with open(args.results, 'w', encoding='utf-8') as fout:
         json.dump({
             "model": args.model,
-            "accuracy": accuracy,
-            "recall (without idk)": recall,
-            "idk_ratio": idk_ratio,
-            "mean_coverage": mean_coverage,
+            "accuracy": round(accuracy, 2),
+            "recall (without idk)": round(recall, 2),
+            "idk_ratio": round(idk_ratio, 2),
+            "mean_coverage": round(mean_coverage, 2),
             "stats": dict(stats)
         }, fout, ensure_ascii=False, indent=2)
     

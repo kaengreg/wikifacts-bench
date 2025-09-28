@@ -12,3 +12,7 @@ spacy==3.8.7
 torch==2.5.0
 transformers==4.53.0
 underthesea==6.8.4
+fastembed==0.7.1
+qdrant-client==1.9.1
+nltk==3.9.1
+bm25s==0.2.14

@@ -5,7 +5,12 @@
 # env
 *venv/
 .venv/
+venv*/
 
 # output
 *corpus.jsonl
 *queries.jsonl
+
+# tests
+test/
+.ipynb_checkpoints/

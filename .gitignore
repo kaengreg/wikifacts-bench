@@ -8,8 +8,7 @@
 venv*/
 
 # output
-*corpus.jsonl
-*queries.jsonl
+*.jsonl
 
 # tests
 test/

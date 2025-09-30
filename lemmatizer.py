@@ -6,16 +6,34 @@ from spacy.language import Language
 from spacy.tokens import Doc
 import pymorphy3
 from underthesea import word_tokenize, text_normalize
+from collections import OrderedDict
 
 
 class Pymorphy3Lemmatizer:
-    def __init__(self):
+    def __init__(self, max_cache_size: int = 1000000):
         self.morph = pymorphy3.MorphAnalyzer()
+        self._lemma_cache: OrderedDict[str, str] = OrderedDict()
+        self._max_cache_size = max_cache_size
+
+    def _get_cached_or_compute(self, surface_form: str) -> str:
+        key = surface_form.lower()
+        cached = self._lemma_cache.get(key)
+        if cached is not None:
+            # Refresh LRU position
+            self._lemma_cache.move_to_end(key)
+            return cached
+
+        lemma = self.morph.parse(surface_form)[0].normal_form
+        self._lemma_cache[key] = lemma
+        if len(self._lemma_cache) > self._max_cache_size:
+            # Evict least-recently-used entry
+            self._lemma_cache.popitem(last=False)
+        return lemma
 
     def __call__(self, doc):
         for token in doc:
             if token.is_alpha:
-                token.lemma_ = self.morph.parse(token.text)[0].normal_form
+                token.lemma_ = self._get_cached_or_compute(token.text)
         return doc
 
 @Language.factory("pymorphy_lemmatizer")
@@ -100,11 +118,18 @@ class MultilingualLemmatizer:
             self.nlp.add_pipe('chinese_lemmatizer')
 
 
-
-    def lemmatize_text(self, text: str) -> str:
+    def lemmatize_text(self, text: str, remove_stopwords: bool = False) -> str:
         doc = self.nlp(text)
+
         if self.lang in ('zh', 'vi'):
-            lemmas = [tok.lemma_ for tok in doc if any(ch.isalnum() for ch in tok.text)]
+            if remove_stopwords:
+                lemmas = [tok.lemma_ for tok in doc if any(ch.isalnum() for ch in tok.text) and not tok.is_stop]
+            else:
+                lemmas = [tok.lemma_ for tok in doc if any(ch.isalnum() for ch in tok.text)]
         else:
-            lemmas = [tok.lemma_ for tok in doc if (tok.is_alpha or tok.is_digit) and len(tok) > 1]
+            if remove_stopwords:
+                lemmas = [tok.lemma_ for tok in doc if (tok.is_alpha or tok.is_digit) and len(tok) > 1 and not tok.is_stop]
+            else:
+                lemmas = [tok.lemma_ for tok in doc if (tok.is_alpha or tok.is_digit) and len(tok) > 1]
+
         return ' '.join(lemmas)

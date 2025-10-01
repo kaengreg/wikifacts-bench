@@ -5,7 +5,7 @@ from rag_client import FactOnlyClient, LinkedAbstractClient, RelevantAbstractCli
 from data_loader import load_queries, load_corpus
 from collections import Counter
 from tqdm import tqdm
-from retrieval import RelevantRetriever
+from retrieval import DenseRetriever
 from lemmatizer import MultilingualLemmatizer
 import torch
 import time
@@ -92,9 +92,9 @@ def main():
 
     queries = load_queries(args.dataset, f"{args.lang}_queries")
     corpus = load_corpus(args.dataset, f"{args.lang}_corpus")
-
+ 
     if args.use_fragment_retriever:
-        retriever = RelevantRetriever(
+        retriever = DenseRetriever(
             model_name=args.retriever_model,
             device='cuda' if torch.cuda.is_available() else 'cpu',
             pooling=args.retriever_pooling,

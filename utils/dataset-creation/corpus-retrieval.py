@@ -26,7 +26,7 @@ def retrieve_from_corpus(
     if mode == 'sparse':
         retriever = RelevantRetriever(mode='sparse', splitter=splitter, extra_kwargs={'lang': lang})
     elif mode == 'dense':
-        retriever = RelevantRetriever(mode='dense', splitter=splitter)
+        retriever = RelevantRetriever(mode='dense', splitter=splitter, extra_kwargs={'lang': lang})
     else:
         raise ValueError("mode must be 'sparse' or 'dense'")
 

@@ -29,16 +29,18 @@ class DenseRetriever:
             maxlen: int, 
             pooling: str,
             splitter: str,
+            lang: str,
             device: str = 'cuda',
             batch_size: int = 16,
     ): 
         assert pooling in ("mean", "cls"), "pooling must be either mean or cls"
         assert splitter in ("sentence", "paragraph"), ""
 
-        self.splitter = splitter 
-
+        self.splitter = splitter
+        self.lang = lang
+        
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        self.model, self.tokenizer = self.load_model(model_name, device)
+        self.model, self.tokenizer = self.load_model(model_name, self.device)
 
         self.maxlen = maxlen
         self.batch_size = batch_size
@@ -47,7 +49,7 @@ class DenseRetriever:
 
     def load_model(self, model_name: str, device: str = 'cuda'):
         model = AutoModel.from_pretrained(model_name).to(device).eval()
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=False)
 
         return model, tokenizer
 

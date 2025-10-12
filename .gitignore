@@ -8,9 +8,9 @@
 venv*/
 
 # output
-*corpus.jsonl
-*queries.jsonl
+*.jsonl
 
 # tests
 test/
+debug/
 .ipynb_checkpoints/

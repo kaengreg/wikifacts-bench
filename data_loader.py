@@ -1,7 +1,9 @@
-from datasets import load_dataset
-from typing import List, Dict, Any
+from typing import Dict, Any
 
-def load_facts(dataset_name: str, split: str = 'queries') -> List[Dict[str, Any]]:
+from datasets import load_dataset
+
+
+def load_facts(dataset_name: str, split: str = 'queries') -> Dict[str, Dict[str, Any]]:
 
     ds = load_dataset(dataset_name, split)
     
@@ -10,7 +12,7 @@ def load_facts(dataset_name: str, split: str = 'queries') -> List[Dict[str, Any]
         for record in ds['train']:
             ds_dict[record['id']] = {
                 'text': record['text'],
-                'linked articles': record['abstract'],
+                'abstract': record['abstract'],
                 'metadata': record['metadata']
             }
     elif 'queries' in split:
@@ -25,7 +27,7 @@ def load_facts(dataset_name: str, split: str = 'queries') -> List[Dict[str, Any]
     return ds_dict
 
 
-def load_queries(dataset_name: str, split: str):
+def load_queries(dataset_name: str, split: str = 'queries') -> Dict[str, Dict[str, Any]]:
     dataset = load_dataset(dataset_name, split)
     fact_dict = {}
     for record in dataset['train']:
@@ -39,7 +41,7 @@ def load_queries(dataset_name: str, split: str):
     return fact_dict
 
 
-def load_corpus(dataset_name: str, split: str = 'corpus'):
+def load_corpus(dataset_name: str, split: str = 'corpus') -> Dict[str, Dict[str, Any]]:
     dataset = load_dataset(dataset_name, split)
     corpus = {}
     for record in dataset['train']:

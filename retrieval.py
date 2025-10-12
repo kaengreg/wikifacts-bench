@@ -9,6 +9,11 @@ import torch
 import torch.nn.functional as F
 from transformers import AutoModel, AutoTokenizer
 
+import nltk
+try:
+    nltk.data.find("tokenizers/punkt_tab")
+except LookupError:
+    nltk.download("punkt_tab")
 from nltk import sent_tokenize
 
 from bm25s import BM25

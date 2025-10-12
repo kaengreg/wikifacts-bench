@@ -12,4 +12,5 @@ venv*/
 
 # tests
 test/
+debug/
 .ipynb_checkpoints/

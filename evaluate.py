@@ -5,7 +5,7 @@ from rag_client import FactOnlyClient, LinkedAbstractClient, RelevantAbstractCli
 from data_loader import load_queries, load_corpus
 from collections import Counter
 from tqdm import tqdm
-from retrieval import DenseRetriever
+from retrieval import RelevantRetriever
 from lemmatizer import MultilingualLemmatizer
 import torch
 import time
@@ -33,6 +33,46 @@ def resolve_context(article_ids, corpus):
         else:
             print(f"WARNING: Article ID '{aid}' not found in corpus.")
     return contexts
+
+
+def get_precomputed_fragments(record, mode, top_k, splitter):
+    """Return top_k precomputed relevant fragments from record['metadata']['retrieval_baseline'].
+    mode: 'sparse' or 'dense'
+    """
+    rb = (record.get('metadata') or {}).get('retrieval_baseline') or {}
+    if mode not in ('sparse', 'dense'):
+        return []
+
+    if splitter not in ("sentence", "paragraph"):
+        splitter = "sentence"
+    keys = [f"{mode}_{splitter}"]
+
+    candidates = []
+    for key in keys:
+        for item in rb.get(key, []) or []:
+            text = (item.get('text') or '').strip()
+            if not text:
+                continue
+
+            sim = item.get('similarity')
+
+            try:
+                sim_val = float(sim)
+            except (TypeError, ValueError):
+                sim_val = 0.0
+            candidates.append((sim_val, text))
+
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    seen = set()
+    fragments = []
+    for _, txt in candidates:
+        if txt in seen:
+            continue
+        seen.add(txt)
+        fragments.append(txt)
+        if len(fragments) >= top_k:
+            break
+    return fragments
     
 def get_rag_client(mode, model_name, api_url, api_key,  failed_facts_path, translator, use_few_shots, allow_idk=True):
     """Selects RAG-client mode"""
@@ -63,7 +103,7 @@ def main():
     parser.add_argument('--api_key', type=str, default='')
     parser.add_argument('--mode', choices=['fact', 'linked', 'relevant'], default='fact')
     parser.add_argument('--allow_idk', action='store_true')
-    parser.add_argument('--translate_prompts', action='store_true')
+    parser.add_argument('--translate_prompts', action='store_true', default=True)
     parser.add_argument('--use_few_shots', action='store_true')
     parser.add_argument('--checkpoint', type=str, default='checkpoint.json')
     parser.add_argument('--outputs', type=str, default='outputs.jsonl')
@@ -76,7 +116,11 @@ def main():
     parser.add_argument('--retriever_maxlen', type=int, default=512)
     parser.add_argument('--retriever_splitter', choices=['sentence', 'paragraph'], default='sentence')
     parser.add_argument('--retriever_pooling', choices=['mean', 'cls'], default='mean')
+    parser.add_argument('--use_precomputed_relevance', choices=['sparse', 'dense'], default='sparse')
     args = parser.parse_args()
+
+    if args.use_precomputed_relevance is not None:
+        args.mode = 'relevant'
 
     start = time.time()
 
@@ -92,9 +136,9 @@ def main():
 
     queries = load_queries(args.dataset, f"{args.lang}_queries")
     corpus = load_corpus(args.dataset, f"{args.lang}_corpus")
- 
+
     if args.use_fragment_retriever:
-        retriever = DenseRetriever(
+        retriever = RelevantRetriever(
             model_name=args.retriever_model,
             device='cuda' if torch.cuda.is_available() else 'cpu',
             pooling=args.retriever_pooling,
@@ -131,7 +175,11 @@ def main():
             abstracts = resolve_context(record.get("linked articles", []), corpus)
             prompt, resp_str = client.call_llm(fact, abstracts)
         elif args.mode.strip() == "relevant":
-            if args.use_fragment_retriever:
+            if args.use_precomputed_relevance is not None:
+                abstracts = get_precomputed_fragments(record, args.use_precomputed_relevance, args.retriever_top_k, args.retriever_splitter)
+                if not abstracts:
+                    abstracts = resolve_context(record.get("relevant articles", []), corpus)
+            elif args.use_fragment_retriever:
                 article_ids = record.get("relevant articles", [])
                 all_text = " ".join([corpus[aid]['text'] for aid in article_ids if aid in corpus])
                 abstracts = retriever.retrieve(fact, all_text, top_k=args.retriever_top_k)

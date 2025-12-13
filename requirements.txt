@@ -16,3 +16,4 @@ fastembed==0.7.1
 qdrant-client==1.9.1
 nltk==3.9.1
 bm25s==0.2.14
+marimo==0.18.4

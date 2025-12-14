@@ -1,23 +1,27 @@
 import marimo
 
 __generated_with = "0.18.4"
-app = marimo.App()
+app = marimo.App(width="full")
 
 
 @app.cell
 def _():
+    import json
+    import os
+    import pickle
     from typing import List, Dict, Any, Optional
-
-    from tqdm import tqdm
 
     import numpy as np
     from sklearn.metrics.pairwise import cosine_similarity 
+    from tqdm import tqdm
 
     import torch 
     import torch.nn.functional as F
+    from datasets import load_dataset
     from transformers import AutoModel, AutoTokenizer
 
     import nltk
+
     try:
         nltk.data.find("tokenizers/punkt_tab")
     except LookupError:
@@ -28,14 +32,49 @@ def _():
 
     from lemmatizer import MultilingualLemmatizer
 
-
     # WIP: languages that have their own nltk tokenizer
     LANG_MAPPING = {
         'ru': 'russian',
         'en': 'english',
     }
+    return (
+        Any,
+        AutoModel,
+        AutoTokenizer,
+        BM25,
+        Dict,
+        F,
+        LANG_MAPPING,
+        List,
+        MultilingualLemmatizer,
+        Optional,
+        cosine_similarity,
+        json,
+        load_dataset,
+        np,
+        os,
+        pickle,
+        sent_tokenize,
+        torch,
+        tqdm,
+    )
 
 
+@app.cell
+def _(
+    Any,
+    AutoModel,
+    AutoTokenizer,
+    Dict,
+    F,
+    LANG_MAPPING,
+    List,
+    cosine_similarity,
+    np,
+    sent_tokenize,
+    torch,
+    tqdm,
+):
     class DenseRetriever:
         def __init__(self,
                 model_name: str,
@@ -44,21 +83,21 @@ def _():
                 splitter: str,
                 lang: str,
                 device: str = 'cuda',
-                batch_size: int = 16,
+                batch_size: int = 256,
         ): 
             assert pooling in ("mean", "cls"), "pooling must be either mean or cls"
             assert splitter in ("sentence", "paragraph", "article"), ""
 
             self.splitter = splitter
             self.lang = lang
-        
+
             self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
             self.model, self.tokenizer = self.load_model(model_name, self.device)
 
             self.maxlen = maxlen
             self.batch_size = batch_size
             self.pooling = pooling.lower()
-        
+
 
         def load_model(self, model_name: str, device: str = 'cuda'):
             model = AutoModel.from_pretrained(model_name).to(device).eval()
@@ -121,7 +160,7 @@ def _():
                     fragments = self.split(article_text)
                 else:
                     fragments = article_text
-                
+
                 for fragment in fragments:
                     fragment_records.append({
                         'text': fragment,
@@ -147,10 +186,25 @@ def _():
                     'score': float(sims[idx]),
                     'article_id': rec['article_id'],
                 })
-        
+
             return results
+    return (DenseRetriever,)
 
 
+@app.cell
+def _(
+    Any,
+    BM25,
+    Dict,
+    LANG_MAPPING,
+    List,
+    MultilingualLemmatizer,
+    Optional,
+    os,
+    pickle,
+    sent_tokenize,
+    true,
+):
     class BM25Retriever:
         """
         BM25 retriever.
@@ -166,6 +220,7 @@ def _():
                 lang: str,
                 splitter: str,
                 corpus: Optional[Dict[str, str]] = None,
+                reindex_corpus: bool = true,
                 k1: float = 1.2,
                 b: float = 0.75,
         ):
@@ -183,7 +238,11 @@ def _():
             self.model = None
 
             if corpus:
-                self.create_index(corpus)
+                if reindex_corpus:
+                    self.create_index(corpus)
+                else:
+                    self.load_index()
+        
 
         def create_index(self, corpus: Optional[Dict[str, str]] = None):
             for article_id, article_text in corpus.items():
@@ -195,6 +254,30 @@ def _():
 
             self.model = BM25(k1=self.k1, b=self.b)
             self.model.index(self._index)
+
+            self.save_index()
+
+        def save_index(self):
+            save_dir = '../data/vector_store/bm25'
+            if not os.path.exists(save_dir):
+                os.makedirs(save_dir)
+            self.model.save(save_dir=save_dir)
+            with open(os.path.join(save_dir, 'index.pkl'), 'wb') as f:
+                pickle.dump(self._index, f)
+            with open(os.path.join(save_dir, 'texts.pkl'), 'wb') as f:
+                pickle.dump(self._texts, f)
+            with open(os.path.join(save_dir, 'owners.pkl'), 'wb') as f:
+                pickle.dump(self._owners, f)
+
+        def load_index(self):
+            save_dir = '../data/vector_store/bm25'
+            self.model = BM25.load(save_dir=save_dir)
+            with open(os.path.join(save_dir, 'index.pkl'), 'rb') as f:
+                self._index = pickle.load(f)
+            with open(os.path.join(save_dir, 'texts.pkl'), 'rb') as f:
+                self._texts = pickle.load(f)
+            with open(os.path.join(save_dir, 'owners.pkl'), 'rb') as f:
+                self._owners = pickle.load(f)
 
         def split_sentence(self, text: str) -> list[str]:
             return [sent.strip() for sent in sent_tokenize(text, language=LANG_MAPPING[self.lang])]
@@ -250,7 +333,7 @@ def _():
                         'score': float(top_scores[i]),
                         'article_id': owners[idx],
                     })
-            
+
                 return results
             # Static corpus
             else:
@@ -263,7 +346,7 @@ def _():
                 indices, scores = self.model.retrieve([tokenized_query], k=k)
                 top_idx = indices[0] 
                 top_scores = scores[0]
-            
+
                 results: List[Dict[str, Any]] = []
                 for i, idx in enumerate(top_idx):
                     results.append({
@@ -271,10 +354,13 @@ def _():
                         'score': float(top_scores[i]),
                         'article_id': self._owners[idx],
                     })
-            
+
                 return results
+    return (BM25Retriever,)
 
 
+@app.cell
+def _(app):
     @app.cell
     def _(Any, BM25Retriever, DenseRetriever, Dict, List):
         class TwoStageRetriever:
@@ -283,14 +369,14 @@ def _():
             First stage: retrieve top-k full articles using sparse BM25.
             Second stage: retrieve top-k fragments from retrieved articles using dense embedder.
             """
-        
+
             def __init__(self, 
                          bm25_retriever: BM25Retriever, 
                          dense_retriever: DenseRetriever,
                          chunks: Dict[str, list[str]]):
                 """
                 Initialize TwoStageRetriever with pre-initialized retrievers.
-            
+
                 :param bm25_retriever: Pre-initialized BM25Retriever (should have splitter='article')
                 :param dense_retriever: Pre-initialized DenseRetriever (should have splitter='sentence')
                 :param chunks: Pre-split chunks for the second retrieval stage.  
@@ -298,17 +384,17 @@ def _():
                 self.bm25_retriever = bm25_retriever
                 self.dense_retriever = dense_retriever
                 self.chunks = chunks
-        
+
             def retrieve(self, 
                          fact: str, 
                          top_k_articles: int = 3, 
                          top_k_sentences: int = 10) -> List[Dict[str, Any]]:
                 """
                 Two-stage retrieval process.
-            
+
                 Stage 1: Use BM25 to retrieve top_k_articles from the static corpus.
                 Stage 2: Combine retrieved articles and use DenseRetriever to get top_k_sentences.
-            
+
                 :param fact: Query/fact to search for
                 :param top_k_articles: Number of articles to retrieve in stage 1
                 :param top_k_sentences: Number of sentences to retrieve in stage 2
@@ -316,31 +402,30 @@ def _():
                 """
                 # Stage 1: Retrieve top-k articles using BM25
                 stage1_results = self.bm25_retriever.retrieve(fact, article_texts_by_id={}, top_k=top_k_articles)
-            
+
                 if not stage1_results:
                     return []
-            
+
                 # Extract unique article IDs from stage 1 results
                 relevant_article_ids = list(set(result['article_id'] for result in stage1_results))
-            
+
                 # Build subcorpus with only the chunks from relevant articles
                 subcorpus = {}
                 for article_id in relevant_article_ids:
                     if article_id in self.chunks:
                         # Remove duplicate sentence inside article
                         subcorpus[article_id] = list(set(self.chunks[article_id]))
-            
+
                 # Stage 2: Use DenseRetriever on the subcorpus to retrieve sentences
                 stage2_results = self.dense_retriever.retrieve(fact, article_texts_by_id=subcorpus, top_k=top_k_sentences, use_presplit_chunks=True)
-            
+
                 return stage2_results
         return (TwoStageRetriever,)
+    return
 
 
 @app.cell
-def _(Dict):
-    from datasets import load_dataset
-
+def _(Dict, load_dataset):
     def load_hf_data(dataset_name: str, split: str='queries') -> Dict[str, str]:
         ds = load_dataset(dataset_name, split)
         ds_dict = {}
@@ -351,15 +436,20 @@ def _(Dict):
 
 
 @app.cell
-def _(BM25Retriever, DenseRetriever, TwoStageRetriever, load_hf_data, tqdm):
-    import json
-
+def _(
+    BM25Retriever,
+    DenseRetriever,
+    TwoStageRetriever,
+    json,
+    load_hf_data,
+    tqdm,
+):
     def retrieve_from_corpus(
         corpus_name='kaengreg/wikifacts-articles',
     ):
         corpus_dataset = load_hf_data(corpus_name, split="corpus")
         queries_dataset = load_hf_data(corpus_name, split="queries")
-        
+
         # Load pre-split sentence chunks
         with open('articles_pre_split_sents.json', 'r') as f:
             chunks = json.load(f)
@@ -373,6 +463,7 @@ def _(BM25Retriever, DenseRetriever, TwoStageRetriever, load_hf_data, tqdm):
             lang='ru',
             splitter='article',
             corpus=corpus_dataset,
+            reindex_corpus=True,
         )
 
         # Initialize dense retriever
@@ -408,7 +499,7 @@ def _(BM25Retriever, DenseRetriever, TwoStageRetriever, load_hf_data, tqdm):
             retrieval_results[qid] = items
 
         return retrieval_results
-    return json, retrieve_from_corpus
+    return (retrieve_from_corpus,)
 
 
 @app.cell

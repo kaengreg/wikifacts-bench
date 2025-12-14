@@ -203,7 +203,6 @@ def _(
     os,
     pickle,
     sent_tokenize,
-    true,
 ):
     class BM25Retriever:
         """
@@ -220,7 +219,7 @@ def _(
                 lang: str,
                 splitter: str,
                 corpus: Optional[Dict[str, str]] = None,
-                reindex_corpus: bool = true,
+                reindex_corpus: bool = True,
                 k1: float = 1.2,
                 b: float = 0.75,
         ):

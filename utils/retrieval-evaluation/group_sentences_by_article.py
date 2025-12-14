@@ -59,8 +59,7 @@ def group_sentences_by_article(input_file: str, output_file: str):
 
 
 if __name__ == "__main__":
-    input_file = "corpus_sents_with_article_ids.jsonl"
-    output_file = "articles_pre_split_sents.json"
+    input_file = "../../heavy_artifacts/corpus_sents_with_article_ids.jsonl"
+    output_file = "../../heavy_artifacts/articles_pre_split_sents.json"
     
     group_sentences_by_article(input_file, output_file)
-

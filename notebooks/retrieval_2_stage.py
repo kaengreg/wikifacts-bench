@@ -242,7 +242,7 @@ def _(
                     self.create_index(corpus)
                 else:
                     self.load_index()
-        
+
 
         def create_index(self, corpus: Optional[Dict[str, str]] = None):
             for article_id, article_text in corpus.items():
@@ -360,68 +360,65 @@ def _(
 
 
 @app.cell
-def _(app):
-    @app.cell
-    def _(Any, BM25Retriever, DenseRetriever, Dict, List):
-        class TwoStageRetriever:
+def _(Any, BM25Retriever, DenseRetriever, Dict, List):
+    class TwoStageRetriever:
+        """
+        Two-stage retriever.
+        First stage: retrieve top-k full articles using sparse BM25.
+        Second stage: retrieve top-k fragments from retrieved articles using dense embedder.
+        """
+
+        def __init__(self, 
+                     bm25_retriever: BM25Retriever, 
+                     dense_retriever: DenseRetriever,
+                     chunks: Dict[str, list[str]]):
             """
-            Two-stage retriever.
-            First stage: retrieve top-k full articles using sparse BM25.
-            Second stage: retrieve top-k fragments from retrieved articles using dense embedder.
+            Initialize TwoStageRetriever with pre-initialized retrievers.
+
+            :param bm25_retriever: Pre-initialized BM25Retriever (should have splitter='article')
+            :param dense_retriever: Pre-initialized DenseRetriever (should have splitter='sentence')
+            :param chunks: Pre-split chunks for the second retrieval stage.  
             """
+            self.bm25_retriever = bm25_retriever
+            self.dense_retriever = dense_retriever
+            self.chunks = chunks
 
-            def __init__(self, 
-                         bm25_retriever: BM25Retriever, 
-                         dense_retriever: DenseRetriever,
-                         chunks: Dict[str, list[str]]):
-                """
-                Initialize TwoStageRetriever with pre-initialized retrievers.
+        def retrieve(self, 
+                     fact: str, 
+                     top_k_articles: int = 3, 
+                     top_k_sentences: int = 10) -> List[Dict[str, Any]]:
+            """
+            Two-stage retrieval process.
 
-                :param bm25_retriever: Pre-initialized BM25Retriever (should have splitter='article')
-                :param dense_retriever: Pre-initialized DenseRetriever (should have splitter='sentence')
-                :param chunks: Pre-split chunks for the second retrieval stage.  
-                """
-                self.bm25_retriever = bm25_retriever
-                self.dense_retriever = dense_retriever
-                self.chunks = chunks
+            Stage 1: Use BM25 to retrieve top_k_articles from the static corpus.
+            Stage 2: Combine retrieved articles and use DenseRetriever to get top_k_sentences.
 
-            def retrieve(self, 
-                         fact: str, 
-                         top_k_articles: int = 3, 
-                         top_k_sentences: int = 10) -> List[Dict[str, Any]]:
-                """
-                Two-stage retrieval process.
+            :param fact: Query/fact to search for
+            :param top_k_articles: Number of articles to retrieve in stage 1
+            :param top_k_sentences: Number of sentences to retrieve in stage 2
+            :returns: List of top_k_sentences with 'text', 'score', 'article_id'
+            """
+            # Stage 1: Retrieve top-k articles using BM25
+            stage1_results = self.bm25_retriever.retrieve(fact, article_texts_by_id={}, top_k=top_k_articles)
 
-                Stage 1: Use BM25 to retrieve top_k_articles from the static corpus.
-                Stage 2: Combine retrieved articles and use DenseRetriever to get top_k_sentences.
+            if not stage1_results:
+                return []
 
-                :param fact: Query/fact to search for
-                :param top_k_articles: Number of articles to retrieve in stage 1
-                :param top_k_sentences: Number of sentences to retrieve in stage 2
-                :returns: List of top_k_sentences with 'text', 'score', 'article_id'
-                """
-                # Stage 1: Retrieve top-k articles using BM25
-                stage1_results = self.bm25_retriever.retrieve(fact, article_texts_by_id={}, top_k=top_k_articles)
+            # Extract unique article IDs from stage 1 results
+            relevant_article_ids = list(set(result['article_id'] for result in stage1_results))
 
-                if not stage1_results:
-                    return []
+            # Build subcorpus with only the chunks from relevant articles
+            subcorpus = {}
+            for article_id in relevant_article_ids:
+                if article_id in self.chunks:
+                    # Remove duplicate sentence inside article
+                    subcorpus[article_id] = list(set(self.chunks[article_id]))
 
-                # Extract unique article IDs from stage 1 results
-                relevant_article_ids = list(set(result['article_id'] for result in stage1_results))
+            # Stage 2: Use DenseRetriever on the subcorpus to retrieve sentences
+            stage2_results = self.dense_retriever.retrieve(fact, article_texts_by_id=subcorpus, top_k=top_k_sentences, use_presplit_chunks=True)
 
-                # Build subcorpus with only the chunks from relevant articles
-                subcorpus = {}
-                for article_id in relevant_article_ids:
-                    if article_id in self.chunks:
-                        # Remove duplicate sentence inside article
-                        subcorpus[article_id] = list(set(self.chunks[article_id]))
-
-                # Stage 2: Use DenseRetriever on the subcorpus to retrieve sentences
-                stage2_results = self.dense_retriever.retrieve(fact, article_texts_by_id=subcorpus, top_k=top_k_sentences, use_presplit_chunks=True)
-
-                return stage2_results
-        return (TwoStageRetriever,)
-    return
+            return stage2_results
+    return (TwoStageRetriever,)
 
 
 @app.cell

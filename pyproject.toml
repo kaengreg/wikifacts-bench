@@ -1,0 +1,27 @@
+[project]
+name = "wikifacts-bench"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "bm25s==0.2.14",
+    "datasets==4.0.0",
+    "dateparser==1.2.2",
+    "deep-translator==1.11.4",
+    "fastembed==0.7.1",
+    "huggingface-hub==0.34.4",
+    "marimo==0.18.4",
+    "nltk==3.9.1",
+    "numpy==2.3.2",
+    "openai==1.99.9",
+    "pymorphy3==2.0.4",
+    "qdrant-client==1.9.1",
+    "regex==2025.7.34",
+    "requests==2.32.4",
+    "scikit-learn==1.7.1",
+    "spacy==3.8.7",
+    "torch==2.5.0",
+    "transformers==4.53.0",
+    "underthesea==6.8.4",
+]

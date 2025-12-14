@@ -109,7 +109,7 @@ def _():
 
             return np.vstack(embeddings)
 
-        def retrieve(self, fact: str, article_texts_by_id: Dict[str, str], top_k: int = 5) -> List[Dict[str, Any]]:
+        def retrieve(self, fact: str, article_texts_by_id: Dict[str, str], top_k: int = 5, use_presplit_chunks: bool = True) -> List[Dict[str, Any]]:
             """
             Retrieve top fragments across multiple articles using dense embeddings.
 
@@ -117,7 +117,11 @@ def _():
             """
             fragment_records: List[Dict[str, Any]] = []
             for article_id, article_text in article_texts_by_id.items():
-                fragments = self.split(article_text)
+                if not use_presplit_chunks:
+                    fragments = self.split(article_text)
+                else:
+                    fragments = article_text
+                
                 for fragment in fragments:
                     fragment_records.append({
                         'text': fragment,
@@ -271,183 +275,66 @@ def _():
                 return results
 
 
-    class RelevantRetriever:
-        """
-        ### Description
-
-        Aggregating, high-level retriever with a unified API.
-
-        This class wraps a sparse BM25 retriever and a dense embedding retriever 
-        and exposes a single ``retrieve`` method. 
-    
-        By default, it uses the sparse BM25 retriever. 
-        Set ``mode='dense'`` to use the dense retriever.
-
-        ### Parameters
-
-        :param mode: Which retriever to initialize (``'sparse'`` or ``'dense'``), defaults to ``'sparse'``.
-        :type mode: str, optional
-        :param splitter: Granularity for splitting article text (``'sentence'``, ``'paragraph'``, or ``'article'``), defaults to ``'sentence'``.
-        :type splitter: str, optional
-        :param extra_kwargs: Parameters override for retriever initializer. Keys vary depending on the selected mode.
-        :type extra_kwargs: dict, optional
-
-        ### Extra arguments
-
-        Mode-specific options passed via ``extra_kwargs``:
-
-        - When ``mode='sparse'`` (BM25):
-
-          - ``lang`` (str): Language code used by the lemmatizer/tokenizer, defaults to ``'ru'``.
-          - ``k1`` (float): BM25 k1 parameter, defaults to ``1.2``.
-          - ``b`` (float): BM25 b parameter, defaults to ``0.75``.
-
-        - When ``mode='dense'``:
-
-          - ``model_name`` (str): HF encoder model to embed text, defaults to ``'intfloat/multilingual-e5-large'``.
-          - ``maxlen`` (int): Max sequence length for tokenizer truncation, defaults to ``256``.
-          - ``pooling`` (str): Pooling strategy (``'mean'`` or ``'cls'``), defaults to ``'mean'``.
-          - ``device`` (str or None): ``'cuda'`` or ``'cpu'``; ``None`` auto-selects, defaults to ``None``.
-          - ``batch_size`` (int): Batch size for embedding computation, defaults to ``16``.
-
-        ### Examples
-
-        The following examples demonstrate how to use the ``RelevantRetriever`` class::
-
-            # Default sparse BM25
-            retriever = RelevantRetriever(mode='sparse', splitter='sentence')
-            top_fragments = retriever.retrieve(fact, article_texts_by_id, top_k=5)
-
-            # Sparse BM25 with language override
-            retriever = RelevantRetriever(mode='sparse', splitter='sentence', extra_kwargs={'lang': 'en'})
-            top_fragments = retriever.retrieve(fact, article_texts_by_id, top_k=8)
-
-            # Dense with defaults
-            retriever = RelevantRetriever(mode='dense', splitter='sentence')
-            top_fragments = retriever.retrieve(fact, article_texts_by_id, top_k=5)
-
-            # Dense with custom model/device
-            retriever = RelevantRetriever(
-                mode='dense', splitter='sentence',
-                extra_kwargs={'model_name': 'intfloat/multilingual-e5-large', 'device': 'cuda', 'maxlen': 256},
-            )
-            top_fragments = retriever.retrieve(fact, article_texts_by_id, top_k=10)
-        """
-        def __init__(self, mode: str = 'sparse', splitter: str = 'sentence', extra_kwargs: dict = {}):
-            self.mode = mode.lower()
-            self.splitter = splitter.lower()
-
-            # Defaults per mode
-            if self.mode == 'sparse':
-                defaults = {
-                    'lang': 'ru',
-                    'k1': 1.2,
-                    'b': 0.75,
-                }
-                init_kwargs = {**defaults, **extra_kwargs}
-                init_kwargs['splitter'] = splitter
-                self._implementation = BM25Retriever(**init_kwargs)
-            elif self.mode == 'dense':
-                defaults = {
-                    'model_name': 'intfloat/multilingual-e5-large',
-                    'maxlen': 256,
-                    'pooling': 'mean',
-                    'device': None,
-                    'batch_size': 16,
-                }
-                init_kwargs = {**defaults, **extra_kwargs}
-                init_kwargs['splitter'] = splitter
-                self._implementation = DenseRetriever(**init_kwargs)
-            else:
-                raise ValueError("Mode must be set to either 'sparse' or 'dense'")
-
-        def retrieve(self, fact: str, article_texts_by_id: Dict[str, str], top_k: int = 5) -> List[Dict[str, Any]]:
+    @app.cell
+    def _(Any, BM25Retriever, DenseRetriever, Dict, List):
+        class TwoStageRetriever:
             """
-            ### Description
-
-            Retrieve the ``top_k`` most relevant fragments across all articles in ``article_texts_by_id``.
-
-            The articles are split into fragments according to ``splitter`` (set at
-            initialization), then the selected backend retriever (sparse BM25 or
-            dense embeddings) ranks those fragments against the provided ``fact``.
-
-            ### Parameters
-
-            :param fact: The query or factual statement to match.
-            :type fact: str
-            :param article_texts_by_id: Mapping of article_id -> full article text
-            :type article_texts_by_id: Dict[str, str]
-            :param top_k: Number of fragments to return. Capped by number of available fragments, defaults to ``5``.
-            :type top_k: int, optional
-            :returns: ``top_k`` fragments ordered from most to least relevant, each with ``text``, ``score``, and ``article_id``.
-            :rtype: List[Dict[str, Any]]
-
-            ### Notes
-
-            - In sparse mode, BM25 runs over language-aware lemmas/tokens.
-            - In dense mode, a HuggingFace encoder embeds the query and fragments;
-              ranking is done via cosine similarity.
+            Two-stage retriever.
+            First stage: retrieve top-k full articles using sparse BM25.
+            Second stage: retrieve top-k fragments from retrieved articles using dense embedder.
             """
-            return self._implementation.retrieve(fact, article_texts_by_id, top_k=top_k)
-    return Any, BM25Retriever, DenseRetriever, Dict, List, tqdm
-
-
-@app.cell
-def _(Any, BM25Retriever, DenseRetriever, Dict, List):
-    class TwoStageRetriever:
-        """
-        Two-stage retriever.
-        First stage: retrieve top-k full articles using sparse BM25.
-        Second stage: retrieve top-k fragments from retrieved articles using dense embedder.
-        """
-    
-        def __init__(self, 
-                     bm25_retriever: BM25Retriever, 
-                     dense_retriever: DenseRetriever,
-                     corpus: Dict[str, str]):
-            """
-            Initialize TwoStageRetriever with pre-initialized retrievers.
         
-            :param bm25_retriever: Pre-initialized BM25Retriever (should have splitter='article')
-            :param dense_retriever: Pre-initialized DenseRetriever (should have splitter='sentence')
-            :param corpus: Static corpus mapping article_id -> article_text
-            """
-            self.bm25_retriever = bm25_retriever
-            self.dense_retriever = dense_retriever
-            self.corpus = corpus
-    
-        def retrieve(self, 
-                     fact: str, 
-                     top_k_articles: int = 5, 
-                     top_k_sentences: int = 5) -> List[Dict[str, Any]]:
-            """
-            Two-stage retrieval process.
+            def __init__(self, 
+                         bm25_retriever: BM25Retriever, 
+                         dense_retriever: DenseRetriever,
+                         chunks: Dict[str, list[str]]):
+                """
+                Initialize TwoStageRetriever with pre-initialized retrievers.
+            
+                :param bm25_retriever: Pre-initialized BM25Retriever (should have splitter='article')
+                :param dense_retriever: Pre-initialized DenseRetriever (should have splitter='sentence')
+                :param chunks: Pre-split chunks for the second retrieval stage.  
+                """
+                self.bm25_retriever = bm25_retriever
+                self.dense_retriever = dense_retriever
+                self.chunks = chunks
         
-            Stage 1: Use BM25 to retrieve top_k_articles from the static corpus.
-            Stage 2: Combine retrieved articles and use DenseRetriever to get top_k_sentences.
-        
-            :param fact: Query/fact to search for
-            :param top_k_articles: Number of articles to retrieve in stage 1
-            :param top_k_sentences: Number of sentences to retrieve in stage 2
-            :returns: List of top_k_sentences with 'text', 'score', 'article_id'
-            """
-            # Stage 1: Retrieve top-k articles using BM25
-            stage1_results = self.bm25_retriever.retrieve(fact, article_texts_by_id={}, top_k=top_k_articles)
-        
-            if not stage1_results:
-                return []
-        
-            # Extract unique article IDs from stage 1 results
-            relevant_article_ids = list(set(result['article_id'] for result in stage1_results))
-        
-            # Build subcorpus with only the relevant articles
-            subcorpus = {article_id: self.corpus[article_id] for article_id in relevant_article_ids}
-        
-            # Stage 2: Use DenseRetriever on the subcorpus to retrieve sentences
-            stage2_results = self.dense_retriever.retrieve(fact, article_texts_by_id=subcorpus, top_k=top_k_sentences)
-        
-            return stage2_results
-    return (TwoStageRetriever,)
+            def retrieve(self, 
+                         fact: str, 
+                         top_k_articles: int = 3, 
+                         top_k_sentences: int = 10) -> List[Dict[str, Any]]:
+                """
+                Two-stage retrieval process.
+            
+                Stage 1: Use BM25 to retrieve top_k_articles from the static corpus.
+                Stage 2: Combine retrieved articles and use DenseRetriever to get top_k_sentences.
+            
+                :param fact: Query/fact to search for
+                :param top_k_articles: Number of articles to retrieve in stage 1
+                :param top_k_sentences: Number of sentences to retrieve in stage 2
+                :returns: List of top_k_sentences with 'text', 'score', 'article_id'
+                """
+                # Stage 1: Retrieve top-k articles using BM25
+                stage1_results = self.bm25_retriever.retrieve(fact, article_texts_by_id={}, top_k=top_k_articles)
+            
+                if not stage1_results:
+                    return []
+            
+                # Extract unique article IDs from stage 1 results
+                relevant_article_ids = list(set(result['article_id'] for result in stage1_results))
+            
+                # Build subcorpus with only the chunks from relevant articles
+                subcorpus = {}
+                for article_id in relevant_article_ids:
+                    if article_id in self.chunks:
+                        # Remove duplicate sentence inside article
+                        subcorpus[article_id] = list(set(self.chunks[article_id]))
+            
+                # Stage 2: Use DenseRetriever on the subcorpus to retrieve sentences
+                stage2_results = self.dense_retriever.retrieve(fact, article_texts_by_id=subcorpus, top_k=top_k_sentences, use_presplit_chunks=True)
+            
+                return stage2_results
+        return (TwoStageRetriever,)
 
 
 @app.cell
@@ -466,24 +353,61 @@ def _(Dict):
 @app.cell
 def _(BM25Retriever, DenseRetriever, TwoStageRetriever, load_hf_data, tqdm):
     import json
-    import argparse
 
-    def retrieve_from_corpus(corpus_name='kaengreg/wikifacts-articles'):
-        corpus_dataset = load_hf_data(corpus_name, split='corpus')
-        queries_dataset = load_hf_data(corpus_name, split='queries')
-        corpus_dataset = dict(list(corpus_dataset.items())[:15])
-        queries_dataset = dict(list(queries_dataset.items())[:3])
-        stage_1_retriever = BM25Retriever(lang='ru', splitter='article', corpus=corpus_dataset)
-        stage_2_retriever = DenseRetriever(model_name='intfloat/multilingual-e5-large', maxlen=256, pooling='mean', lang='ru', splitter='sentence', device='cpu')
-        retriever = TwoStageRetriever(bm25_retriever=stage_1_retriever, dense_retriever=stage_2_retriever, corpus=corpus_dataset)
+    def retrieve_from_corpus(
+        corpus_name='kaengreg/wikifacts-articles',
+    ):
+        corpus_dataset = load_hf_data(corpus_name, split="corpus")
+        queries_dataset = load_hf_data(corpus_name, split="queries")
+        
+        # Load pre-split sentence chunks
+        with open('articles_pre_split_sents.json', 'r') as f:
+            chunks = json.load(f)
+
+        # For testing
+    #     corpus_dataset = dict(list(corpus_dataset.items())[:15])
+    #     queries_dataset = dict(list(queries_dataset.items())[:3])
+
+        # Initialize BM25 with pre-built corpus
+        stage_1_retriever = BM25Retriever(
+            lang='ru',
+            splitter='article',
+            corpus=corpus_dataset,
+        )
+
+        # Initialize dense retriever
+        stage_2_retriever = DenseRetriever(
+            model_name='intfloat/multilingual-e5-large',
+            maxlen=256,
+            pooling='mean',
+            lang='ru',
+            splitter='sentence',
+            device='cuda:0',
+        )
+
+        # Initialize two-stage retriever
+        retriever = TwoStageRetriever(
+            bm25_retriever=stage_1_retriever,
+            dense_retriever=stage_2_retriever,
+            chunks=chunks,
+        )
+
         retrieval_results = {}
-        for qid, qtext in tqdm(queries_dataset.items(), desc='Retrieving relevant fragments from corpus'):  # For testing
-            top = retriever.retrieve(qtext, top_k_articles=3, top_k_sentences=5)
+
+        for qid, qtext in tqdm(queries_dataset.items(), desc="Retrieving relevant fragments from corpus"):
+            top = retriever.retrieve(qtext, top_k_articles=10, top_k_sentences=100)
+
             items = []
             for item in top:
-                items.append({'text': item['text'], 'similarity': float(item['score']), 'article_id': item['article_id']})  # Initialize BM25 with pre-built corpus
+                items.append({
+                    'text': item['text'],
+                    'similarity': float(item['score']),
+                    'article_id': item['article_id'],
+                })
+
             retrieval_results[qid] = items
-        return retrieval_results  # Initialize dense retriever  # Initialize two-stage retriever
+
+        return retrieval_results
     return json, retrieve_from_corpus
 
 
@@ -491,7 +415,7 @@ def _(BM25Retriever, DenseRetriever, TwoStageRetriever, load_hf_data, tqdm):
 def _(json, retrieve_from_corpus):
     retrieval_results = retrieve_from_corpus()
 
-    out_path = f'retrieval_results_2_stage.jsonl'
+    out_path = f'retrieval_results_2_stage_pre_split.jsonl'
     with open(out_path, 'w') as f:
         for qid, items in retrieval_results.items():
             rec = {
@@ -506,4 +430,3 @@ def _(json, retrieve_from_corpus):
 
 if __name__ == "__main__":
     app.run()
-

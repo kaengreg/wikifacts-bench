@@ -447,7 +447,7 @@ def _(
         queries_dataset = load_hf_data(corpus_name, split="queries")
 
         # Load pre-split sentence chunks
-        with open('articles_pre_split_sents.json', 'r') as f:
+        with open('../heavy_artifacts/articles_pre_split_sents.json', 'r') as f:
             chunks = json.load(f)
 
         # For testing
@@ -502,7 +502,7 @@ def _(
 def _(json, retrieve_from_corpus):
     retrieval_results = retrieve_from_corpus()
 
-    out_path = f'retrieval_results_2_stage_pre_split.jsonl'
+    out_path = f'../heavy_artifacts/retrieval_results_2_stage_pre_split.jsonl'
     with open(out_path, 'w') as f:
         for qid, items in retrieval_results.items():
             rec = {

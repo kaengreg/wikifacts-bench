@@ -203,6 +203,7 @@ def _(
     os,
     pickle,
     sent_tokenize,
+    tqdm,
 ):
     class BM25Retriever:
         """
@@ -242,9 +243,8 @@ def _(
                 else:
                     self.load_index()
 
-
         def create_index(self, corpus: Optional[Dict[str, str]] = None):
-            for article_id, article_text in corpus.items():
+            for article_id, article_text in tqdm(corpus.items(), desc="Creating BM25 index"):
                 frags = self.split(article_text)
 
                 self._owners.extend([article_id] * len(frags))
@@ -260,7 +260,9 @@ def _(
             save_dir = '../data/vector_store/bm25'
             if not os.path.exists(save_dir):
                 os.makedirs(save_dir)
+        
             self.model.save(save_dir=save_dir)
+        
             with open(os.path.join(save_dir, 'index.pkl'), 'wb') as f:
                 pickle.dump(self._index, f)
             with open(os.path.join(save_dir, 'texts.pkl'), 'wb') as f:
@@ -268,15 +270,21 @@ def _(
             with open(os.path.join(save_dir, 'owners.pkl'), 'wb') as f:
                 pickle.dump(self._owners, f)
 
+            print(f'Successfully saved BM25 index at path: {save_dir}')
+
         def load_index(self):
             save_dir = '../data/vector_store/bm25'
+        
             self.model = BM25.load(save_dir=save_dir)
+        
             with open(os.path.join(save_dir, 'index.pkl'), 'rb') as f:
                 self._index = pickle.load(f)
             with open(os.path.join(save_dir, 'texts.pkl'), 'rb') as f:
                 self._texts = pickle.load(f)
             with open(os.path.join(save_dir, 'owners.pkl'), 'rb') as f:
                 self._owners = pickle.load(f)
+
+            print(f'Successfully loaded BM25 index at path: {save_dir}')
 
         def split_sentence(self, text: str) -> list[str]:
             return [sent.strip() for sent in sent_tokenize(text, language=LANG_MAPPING[self.lang])]

@@ -1,8 +1,8 @@
 import json
 
 # Read the JSONL file
-input_file = 'retrieval_results_with_ids_pre_split.jsonl'
-output_file = 'adapted_scores_pre_split.json'
+input_file = '../../heavy_artifacts/retrieval_results_with_ids_pre_split.jsonl'
+output_file = '../../heavy_artifacts/adapted_scores_pre_split.json'
 
 # Dictionary to store the extracted data
 adapted_scores = {}
@@ -43,4 +43,3 @@ with open(output_file, 'w', encoding='utf-8') as f:
 
 print(f"Successfully processed {len(adapted_scores)} queries")
 print(f"Output saved to: {output_file}")
-

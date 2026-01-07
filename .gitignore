@@ -17,6 +17,7 @@ debug/
 
 # heavy artifacts
 heavy_artifacts/
+data/
 
 # marimo notebook extra files
 __marimo__/

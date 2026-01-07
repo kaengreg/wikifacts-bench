@@ -128,7 +128,7 @@ def _(
 
         def get_embeddings(self, texts: list[str]) -> np.ndarray:
             embeddings = []
-            for i in tqdm(range(0, len(texts), self.batch_size), desc="Processing Batches"):
+            for i in range(0, len(texts), self.batch_size):
                 batch_texts = texts[i:i + self.batch_size]
                 batch_dict = self.tokenizer(batch_texts, max_length=self.maxlen, padding=True, truncation=True,
                                             return_tensors='pt')
@@ -459,15 +459,15 @@ def _(
             chunks = json.load(f)
 
         # For testing
-    #     corpus_dataset = dict(list(corpus_dataset.items())[:15])
-    #     queries_dataset = dict(list(queries_dataset.items())[:3])
+#         corpus_dataset = dict(list(corpus_dataset.items())[:15])
+#         queries_dataset = dict(list(queries_dataset.items())[:3])
 
         # Initialize BM25 with pre-built corpus
         stage_1_retriever = BM25Retriever(
             lang='ru',
             splitter='article',
             corpus=corpus_dataset,
-            reindex_corpus=True,
+            reindex_corpus=False,
         )
 
         # Initialize dense retriever

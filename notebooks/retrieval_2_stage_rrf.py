@@ -128,7 +128,7 @@ def _(
 
         def get_embeddings(self, texts: list[str]) -> np.ndarray:
             embeddings = []
-            for i in tqdm(range(0, len(texts), self.batch_size), desc="Processing Batches"):
+            for i in range(0, len(texts), self.batch_size):
                 batch_texts = texts[i:i + self.batch_size]
                 batch_dict = self.tokenizer(batch_texts, max_length=self.maxlen, padding=True, truncation=True,
                                             return_tensors='pt')
@@ -394,24 +394,63 @@ def _(Any, BM25Retriever, DenseRetriever, Dict, List):
             self.bm25_retriever = bm25_retriever
             self.dense_retriever = dense_retriever
             self.chunks = chunks
+            
+        def _get_articles_len_penalties(self,
+                                        articles: Dict[str, List[str]]) -> Dict[str, float]:
+            """
+            Calculate length penalties for long retrieved articles.
+            Length is the sentences count.
+            
+            Penalty formula for article i:
+            penalty_multiplier = max(0.7, 1 - ((len(i) - len(min_article) / ∑ len(j))))
+            
+            :param articles: Articles with their ids and sentences.
+            :returns: Penalty multipliers for all articles.
+            """
+            penalties = {}
+            
+            # Fisrt run through to calculate min and sum
+            min_len, sum_len = -1, 0
+            for sentences in articles.values():
+                cur_len = len(sentences)
+                
+                if cur_len < min_len or min_len == -1:
+                    min_len = cur_len
+                    
+                sum_len += cur_len
+                
+            # Second run through to calculate penalty multipliers
+            for idx in articles:
+                penalties[idx] = max(0.7, 1 - ((len(articles[idx]) - min_len) / sum_len))
+                
+            return penalties
 
         def _rerank_with_rrf(self,
                              docs: List[Dict[str, Any]],
-                             weights: List[float] = [0.5, 0.5]) -> List[Dict[str, Any]]:
+                             weights: List[float] = [0.5, 0.5],
+                             len_penalties: Dict[str, float] = None) -> List[Dict[str, Any]]:
             """
             Rerank retrieved documents using Weighted Reciprocal Rank Fusion.
 
             RRF formula for sentence with rank i and article with rank j:
-            rrf = w1 * (1 / j) + w2 * (1 / i)
+            rrf = w0 * len_penalty[j] * (1 / j) + w1 * (1 / i)
 
             :param docs: Retrieved documents with reciprocal ranks for both retrieval stages
             :param weights: Importance of each stage for RRF, sums up to 1
+            :param len_penalties: Length penalties for long articles
             :returns: Reranked documents
             """
+            # If length penalties were not provided, ignore them during computation
+            if not len_penalties:
+                len_penalties = {}
+                for entry in docs:
+                    if entry['article_id'] not in len_penalties:
+                        len_penalties[entry['article_id']] = 1.0
+            
             # Calculate RRF scores for all docs
             for entry in docs:
                 rrf_score = (
-                    weights[0] * entry['article_reciprocal_rank'] 
+                    weights[0] * len_penalties[entry['article_id']] * entry['article_reciprocal_rank'] 
                     + weights[1] * entry['sentence_reciprocal_rank']
                 )
                 entry['rrf_score'] = rrf_score
@@ -468,6 +507,9 @@ def _(Any, BM25Retriever, DenseRetriever, Dict, List):
                 
                     subcorpus[article_id] = article_sentences
                     total_sentences += len(article_sentences)
+                    
+            # Calculate length penalties for all extracted articles
+            len_penalties = self._get_articles_len_penalties(subcorpus)
 
             # Stage 2: Use DenseRetriever on the subcorpus to retrieve sentences
             stage2_results = self.dense_retriever.retrieve(
@@ -483,7 +525,11 @@ def _(Any, BM25Retriever, DenseRetriever, Dict, List):
                 entry['sentence_reciprocal_rank'] = 1 / idx
 
             # Rerank results using weighted RRF
-            rrf_reranked_results = self._rerank_with_rrf(stage2_results, weights=stages_weights)
+            rrf_reranked_results = self._rerank_with_rrf(
+                stage2_results, 
+                weights=stages_weights,
+                len_penalties=len_penalties,
+            )
 
             return rrf_reranked_results[:top_k_sentences]
     return (TwoStageRetrieverRRF,)
@@ -510,6 +556,8 @@ def _(
     tqdm,
 ):
     def retrieve_from_corpus(
+        top_k_articles,
+        stages_weights,
         corpus_name='kaengreg/wikifacts-articles',
     ):
         corpus_dataset = load_hf_data(corpus_name, split="corpus")
@@ -520,8 +568,8 @@ def _(
             chunks = json.load(f)
 
         # For testing
-    #     corpus_dataset = dict(list(corpus_dataset.items())[:15])
-    #     queries_dataset = dict(list(queries_dataset.items())[:3])
+#         corpus_dataset = dict(list(corpus_dataset.items())[:15])
+#         queries_dataset = dict(list(queries_dataset.items())[:3])
 
         # Initialize BM25 with pre-built corpus
         stage_1_retriever = BM25Retriever(
@@ -553,9 +601,9 @@ def _(
         for qid, qtext in tqdm(queries_dataset.items(), desc="Retrieving relevant fragments from corpus"):
             top = retriever.retrieve(
                 qtext, 
-                top_k_articles=3, 
+                top_k_articles=top_k_articles, 
                 top_k_sentences=100, 
-                stages_weights=[0.5, 0.5],
+                stages_weights=stages_weights,
             )
 
             items = []
@@ -576,18 +624,26 @@ def _(
 
 @app.cell
 def _(json, retrieve_from_corpus):
-    retrieval_results = retrieve_from_corpus()
+    # Set hyperparameter grid
+    top_k_articles_grid = [2, 3, 4]
+    weights_grid = [[0.2, 0.8], [0.3, 0.7], [0.4, 0.6], [0.5, 0.5], [0.6, 0.4], [0.7, 0.3]]
+    
+    # Perform inference on grid
+    for t_i in top_k_articles_grid:
+        for w_i in weights_grid:
+            print(f'Current grid value: top_k_articles = {t_i}, stages_weights = {w_i}')
+            retrieval_results = retrieve_from_corpus(t_i, w_i)
 
-    out_path = f'../heavy_artifacts/retrieval_results_2_stage_pre_split.jsonl'
-    with open(out_path, 'w') as f:
-        for qid, items in retrieval_results.items():
-            rec = {
-                'query_id': qid,
-                'results': items,
-            }
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            out_path = f'../heavy_artifacts/with_penalties/retrieval_results_2_stage_pre_split_{t_i}_{w_i[0]}_{w_i[1]}.jsonl'
+            with open(out_path, 'w') as f:
+                for qid, items in retrieval_results.items():
+                    rec = {
+                        'query_id': qid,
+                        'results': items,
+                    }
+                    f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
-    print(f"Wrote results to {out_path}")
+            print(f"Wrote results to {out_path}")
     return
 
 

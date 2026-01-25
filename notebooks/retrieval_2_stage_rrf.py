@@ -424,6 +424,34 @@ def _(Any, BM25Retriever, DenseRetriever, Dict, List):
                 penalties[idx] = max(0.7, 1 - ((len(articles[idx]) - min_len) / sum_len))
                 
             return penalties
+        
+        def _get_sentence_len_penalty(self,
+                                      sentence: str) -> float:
+            """
+            Calculate length penalty for the sentence.
+            
+            Numeric thresholds in penalty formula are deduced from qrels length distribution:
+            1. 80 <= len <= 140 --> 1.0
+            2. 60 <= len <= 155 --> 0.9
+            3. 50 <= len <= 190 --> 0.8
+            4. 35 <= len <= 230 --> 0.75
+            5. otherwise --> 0.7
+            
+            :param sentence: Input sentence
+            :returns: Penalty multiplier for the sentence
+            """
+            sent_len = len(sentence)
+            
+            if sent_len >= 80 and sent_len <= 140:
+                return 1.0
+            if sent_len >= 60 and sent_len <= 155:
+                return 0.9
+            if sent_len >= 50 and sent_len <= 190:
+                return 0.8
+            if sent_len >= 35 and sent_len <= 230:
+                return 0.75
+            
+            return 0.7
 
         def _rerank_with_rrf(self,
                              docs: List[Dict[str, Any]],
@@ -433,7 +461,7 @@ def _(Any, BM25Retriever, DenseRetriever, Dict, List):
             Rerank retrieved documents using Weighted Reciprocal Rank Fusion.
 
             RRF formula for sentence with rank i and article with rank j:
-            rrf = w0 * len_penalty[j] * (1 / j) + w1 * (1 / i)
+            rrf = w0 * len_penalty[j] * (1 / j) + w1 * sentence_penalty[i] * (1 / i)
 
             :param docs: Retrieved documents with reciprocal ranks for both retrieval stages
             :param weights: Importance of each stage for RRF, sums up to 1
@@ -451,7 +479,7 @@ def _(Any, BM25Retriever, DenseRetriever, Dict, List):
             for entry in docs:
                 rrf_score = (
                     weights[0] * len_penalties[entry['article_id']] * entry['article_reciprocal_rank'] 
-                    + weights[1] * entry['sentence_reciprocal_rank']
+                    + weights[1] * entry['sentence_penalty'] * entry['sentence_reciprocal_rank']
                 )
                 entry['rrf_score'] = rrf_score
 
@@ -519,10 +547,11 @@ def _(Any, BM25Retriever, DenseRetriever, Dict, List):
                 use_presplit_chunks=True
             )
 
-            # Enrich the results with reciprocal ranks for both stages
+            # Enrich the results with reciprocal ranks for both stages + penalties
             for idx, entry in enumerate(stage2_results, 1):
                 entry['article_reciprocal_rank'] = article_to_rank[entry['article_id']]
                 entry['sentence_reciprocal_rank'] = 1 / idx
+                entry['sentence_penalty'] = self._get_sentence_len_penalty(entry['text'])
 
             # Rerank results using weighted RRF
             rrf_reranked_results = self._rerank_with_rrf(
@@ -614,6 +643,7 @@ def _(
                     'article_id': item['article_id'],
                     'article_reciprocal_rank': float(item['article_reciprocal_rank']),
                     'sentence_reciprocal_rank': float(item['sentence_reciprocal_rank']),
+                    'sentence_penalty': float(item['sentence_penalty']),
                 })
 
             retrieval_results[qid] = items
@@ -625,8 +655,8 @@ def _(
 @app.cell
 def _(json, retrieve_from_corpus):
     # Set hyperparameter grid
-    top_k_articles_grid = [2, 3, 4]
-    weights_grid = [[0.2, 0.8], [0.3, 0.7], [0.4, 0.6], [0.5, 0.5], [0.6, 0.4], [0.7, 0.3]]
+    top_k_articles_grid = [4]
+    weights_grid = [[0.5, 0.5], [0.6, 0.4], [0.7, 0.3]]
     
     # Perform inference on grid
     for t_i in top_k_articles_grid:
@@ -634,7 +664,7 @@ def _(json, retrieve_from_corpus):
             print(f'Current grid value: top_k_articles = {t_i}, stages_weights = {w_i}')
             retrieval_results = retrieve_from_corpus(t_i, w_i)
 
-            out_path = f'../heavy_artifacts/with_penalties/retrieval_results_2_stage_pre_split_{t_i}_{w_i[0]}_{w_i[1]}.jsonl'
+            out_path = f'../heavy_artifacts/with_both_penalties/retrieval_results_2_stage_pre_split_{t_i}_{w_i[0]}_{w_i[1]}.jsonl'
             with open(out_path, 'w') as f:
                 for qid, items in retrieval_results.items():
                     rec = {

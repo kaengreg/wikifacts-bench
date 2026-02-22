@@ -69,6 +69,7 @@ def _(
     F,
     LANG_MAPPING,
     List,
+    Optional,
     cosine_similarity,
     np,
     sent_tokenize,
@@ -84,6 +85,8 @@ def _(
                 lang: str,
                 device: str = 'cuda',
                 batch_size: int = 256,
+                corpus_cache: Optional[Dict[str, np.ndarray]] = None,
+                query_cache: Optional[Dict[str, np.ndarray]] = None,
         ): 
             assert pooling in ("mean", "cls"), "pooling must be either mean or cls"
             assert splitter in ("sentence", "paragraph", "article"), ""
@@ -97,6 +100,9 @@ def _(
             self.maxlen = maxlen
             self.batch_size = batch_size
             self.pooling = pooling.lower()
+
+            self.corpus_cache = corpus_cache
+            self.query_cache = query_cache
 
 
         def load_model(self, model_name: str, device: str = 'cuda'):
@@ -126,27 +132,46 @@ def _(
         def _cls_pool(self, model_output: torch.Tensor) -> torch.Tensor:
             return model_output.last_hidden_state[:, 0, :]
 
-        def get_embeddings(self, texts: list[str]) -> np.ndarray:
-            embeddings = []
-            for i in range(0, len(texts), self.batch_size):
-                batch_texts = texts[i:i + self.batch_size]
-                batch_dict = self.tokenizer(batch_texts, max_length=self.maxlen, padding=True, truncation=True,
-                                            return_tensors='pt')
-                batch_dict = {k: v.to(self.device) for k, v in batch_dict.items()}
+        def get_embeddings(self, texts: list[str], prefix: str = "", cache: Optional[Dict[str, np.ndarray]] = None) -> np.ndarray:
+            """
+            Get embeddings for a list of texts, using cache if available.
+            """
+            results = [None] * len(texts)
+            to_compute_indices = []
+            to_compute_texts = []
 
-                with torch.no_grad():
-                    outputs = self.model(**batch_dict)
-                if self.pooling == 'mean':
-                    batch_embeddings = self._average_pool(outputs, batch_dict['attention_mask'])
-                elif self.pooling == 'cls':
-                    batch_embeddings = self._cls_pool(outputs)
+            for i, text in enumerate(texts):
+                if cache and text in cache:
+                    results[i] = cache[text]
                 else:
-                    raise ValueError(f"Unknown pooling method: {self.pooling}")
+                    to_compute_indices.append(i)
+                    to_compute_texts.append(f"{prefix}{text}")
 
-                batch_embeddings = F.normalize(batch_embeddings, p=2, dim=1)
-                embeddings.append(batch_embeddings.cpu().numpy())
+            if to_compute_texts:
+                computed_embeddings = []
+                for i in range(0, len(to_compute_texts), self.batch_size):
+                    batch_texts = to_compute_texts[i:i + self.batch_size]
+                    batch_dict = self.tokenizer(batch_texts, max_length=self.maxlen, padding=True, truncation=True,
+                                                return_tensors='pt')
+                    batch_dict = {k: v.to(self.device) for k, v in batch_dict.items()}
 
-            return np.vstack(embeddings)
+                    with torch.no_grad():
+                        outputs = self.model(**batch_dict)
+                    if self.pooling == 'mean':
+                        batch_embeddings = self._average_pool(outputs, batch_dict['attention_mask'])
+                    elif self.pooling == 'cls':
+                        batch_embeddings = self._cls_pool(outputs)
+                    else:
+                        raise ValueError(f"Unknown pooling method: {self.pooling}")
+
+                    batch_embeddings = F.normalize(batch_embeddings, p=2, dim=1)
+                    computed_embeddings.append(batch_embeddings.cpu().numpy())
+                
+                computed_embeddings = np.vstack(computed_embeddings)
+                for idx, emb in zip(to_compute_indices, computed_embeddings):
+                    results[idx] = emb
+
+            return np.vstack(results)
 
         def retrieve(self, fact: str, article_texts_by_id: Dict[str, str], top_k: int = 5, use_presplit_chunks: bool = True) -> List[Dict[str, Any]]:
             """
@@ -170,9 +195,9 @@ def _(
             if not fragment_records:
                 return []
 
-            query_emb = self.get_embeddings([fact])
+            query_emb = self.get_embeddings([fact], prefix="query: ", cache=self.query_cache)
             frag_texts = [rec['text'] for rec in fragment_records]
-            frag_embs = self.get_embeddings(frag_texts)
+            frag_embs = self.get_embeddings(frag_texts, prefix="passage: ", cache=self.corpus_cache)
 
             sims = cosine_similarity(query_emb, frag_embs)[0]
             order = sims.argsort()[::-1]
@@ -383,20 +408,47 @@ def _(Any, BM25Retriever, DenseRetriever, Dict, List):
         def __init__(self, 
                      bm25_retriever: BM25Retriever, 
                      dense_retriever: DenseRetriever,
-                     chunks: Dict[str, list[str]]):
+                     chunks: Dict[str, list[str]],
+                     avg_article_len: float):
             """
             Initialize TwoStageRetriever with pre-initialized retrievers.
 
             :param bm25_retriever: Pre-initialized BM25Retriever (should have splitter='article')
             :param dense_retriever: Pre-initialized DenseRetriever (should have splitter='sentence')
-            :param chunks: Pre-split chunks for the second retrieval stage.  
+            :param chunks: Pre-split chunks for the second retrieval stage.
+            :param avg_article_len: Average length of articles in the input corpus.
             """
             self.bm25_retriever = bm25_retriever
             self.dense_retriever = dense_retriever
             self.chunks = chunks
+            self.avg_article_len = avg_article_len
             
-        def _get_articles_len_penalties(self,
-                                        articles: Dict[str, List[str]]) -> Dict[str, float]:
+        def _get_articles_len_penalties_global(self,
+                                               articles: Dict[str, List[str]]) -> Dict[str, float]:
+            """
+            Calculate length penalties for retrieved articles shorter than global average.
+            Length is the symbols count.
+            
+            Penalty formula for article i:
+            penalty_multiplier = 1 - ((global_avg_len - len(i)) / global_avg_len)
+            
+            :param articles: Articles with their ids and texts.
+            :returns: Penalty multipliers for all articles.
+            """
+            penalties = {}
+                
+            for idx in articles:
+                article_len = len(articles[idx].strip())
+                
+                if article_len >= self.avg_article_len:
+                    penalties[idx] = 1
+                else:
+                    penalties[idx] = 1 - ((self.avg_article_len - article_len) / self.avg_article_len)
+                
+            return penalties
+            
+        def _get_articles_len_penalties_local(self,
+                                              articles: Dict[str, List[str]]) -> Dict[str, float]:
             """
             Calculate length penalties for long retrieved articles.
             Length is the sentences count.
@@ -425,10 +477,33 @@ def _(Any, BM25Retriever, DenseRetriever, Dict, List):
                 
             return penalties
         
-        def _get_sentence_len_penalty(self,
-                                      sentence: str) -> float:
+        def _get_sentence_len_rel_penalty(self,
+                                          sentence: str,
+                                          fact: str) -> float:
             """
-            Calculate length penalty for the sentence.
+            Calculate length penalty for the sentence relative to the fact's lenth.
+            
+            Penalty applies only to the sentences shorter than query:
+            penalty_multiplier = 1 - ((len(fact) - len(sentence)) / len(fact))
+            
+            :param sentence: Input sentence
+            :param fact: Query text
+            :returns: Penalty multiplier for the sentence
+            """
+            sent_len = len(sentence)
+            fact_len = len(fact)
+            len_dist = fact_len - sent_len
+            
+            if len_dist > 0:
+                norm_dist = len_dist / fact_len
+                return 1 - norm_dist
+            
+            return 1
+        
+        def _get_sentence_len_abs_penalty(self,
+                                          sentence: str) -> float:
+            """
+            Calculate absolute length penalty for the sentence.
             
             Numeric thresholds in penalty formula are deduced from qrels length distribution:
             1. 80 <= len <= 140 --> 1.0
@@ -536,8 +611,16 @@ def _(Any, BM25Retriever, DenseRetriever, Dict, List):
                     subcorpus[article_id] = article_sentences
                     total_sentences += len(article_sentences)
                     
+            # Build subcorpus with full-text articles for penalty calculation
+            article_subcorpus = {}
+            for article_id in relevant_article_ids:
+                if article_id in self.chunks:
+                    article_text = ' '.join(self.chunks[article_id])
+                
+                    article_subcorpus[article_id] = article_text
+                    
             # Calculate length penalties for all extracted articles
-            len_penalties = self._get_articles_len_penalties(subcorpus)
+            len_penalties = self._get_articles_len_penalties_global(article_subcorpus)
 
             # Stage 2: Use DenseRetriever on the subcorpus to retrieve sentences
             stage2_results = self.dense_retriever.retrieve(
@@ -551,7 +634,7 @@ def _(Any, BM25Retriever, DenseRetriever, Dict, List):
             for idx, entry in enumerate(stage2_results, 1):
                 entry['article_reciprocal_rank'] = article_to_rank[entry['article_id']]
                 entry['sentence_reciprocal_rank'] = 1 / idx
-                entry['sentence_penalty'] = self._get_sentence_len_penalty(entry['text'])
+                entry['sentence_penalty'] = self._get_sentence_len_rel_penalty(entry['text'], fact)
 
             # Rerank results using weighted RRF
             rrf_reranked_results = self._rerank_with_rrf(
@@ -565,14 +648,28 @@ def _(Any, BM25Retriever, DenseRetriever, Dict, List):
 
 
 @app.cell
-def _(Dict, load_dataset):
+def _(Dict, Optional, np, os, json, load_dataset):
     def load_hf_data(dataset_name: str, split: str='queries') -> Dict[str, str]:
         ds = load_dataset(dataset_name, split)
         ds_dict = {}
         for record in ds['train']:
             ds_dict[record['_id']] = record['text']
         return ds_dict
-    return (load_hf_data,)
+
+    def load_cache(path: str) -> Optional[Dict[str, np.ndarray]]:
+        emb_path = os.path.join(path, 'embeddings.npy')
+        meta_path = os.path.join(path, 'metadata.json')
+        if not os.path.exists(emb_path) or not os.path.exists(meta_path):
+            print(f"Cache not found at {path}")
+            return None
+        
+        print(f"Loading cache from {path}...")
+        embeddings = np.load(emb_path)
+        with open(meta_path, 'r', encoding='utf-8') as f:
+            texts = json.load(f)
+        
+        return {text: emb for text, emb in zip(texts, embeddings)}
+    return (load_cache, load_hf_data)
 
 
 @app.cell
@@ -581,7 +678,9 @@ def _(
     DenseRetriever,
     TwoStageRetrieverRRF,
     json,
+    load_cache,
     load_hf_data,
+    np,
     tqdm,
 ):
     def retrieve_from_corpus(
@@ -591,14 +690,17 @@ def _(
     ):
         corpus_dataset = load_hf_data(corpus_name, split="corpus")
         queries_dataset = load_hf_data(corpus_name, split="queries")
+        
+        # Calculate corpus average text's length
+        avg_article_len = np.mean([len(x.strip()) for x in corpus_dataset.values()])
 
         # Load pre-split sentence chunks
         with open('../heavy_artifacts/articles_pre_split_sents.json', 'r') as f:
             chunks = json.load(f)
 
-        # For testing
-#         corpus_dataset = dict(list(corpus_dataset.items())[:15])
-#         queries_dataset = dict(list(queries_dataset.items())[:3])
+        # Load caches
+        corpus_cache = load_cache('../data/vector_store/e5/corpus')
+        query_cache = load_cache('../data/vector_store/e5/queries')
 
         # Initialize BM25 with pre-built corpus
         stage_1_retriever = BM25Retriever(
@@ -616,6 +718,8 @@ def _(
             lang='ru',
             splitter='sentence',
             device='cuda:0',
+            corpus_cache=corpus_cache,
+            query_cache=query_cache,
         )
 
         # Initialize two-stage retriever
@@ -623,6 +727,7 @@ def _(
             bm25_retriever=stage_1_retriever,
             dense_retriever=stage_2_retriever,
             chunks=chunks,
+            avg_article_len=avg_article_len,
         )
 
         retrieval_results = {}
@@ -655,8 +760,8 @@ def _(
 @app.cell
 def _(json, retrieve_from_corpus):
     # Set hyperparameter grid
-    top_k_articles_grid = [4]
-    weights_grid = [[0.5, 0.5], [0.6, 0.4], [0.7, 0.3]]
+    top_k_articles_grid = [2, 3, 4, 5]
+    weights_grid = [[0.25, 0.75], [0.3, 0.7], [0.35, 0.65]]
     
     # Perform inference on grid
     for t_i in top_k_articles_grid:

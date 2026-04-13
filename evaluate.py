@@ -134,7 +134,7 @@ def main():
     for path in [args.checkpoint, args.outputs, args.results]:
         os.makedirs(os.path.dirname(path), exist_ok=True) if os.path.dirname(path) else None
 
-    queries = load_queries(args.dataset, f"{args.lang}_queries")
+    queries = dict(list(load_queries(args.dataset, f"{args.lang}_queries").items())[:1])
     corpus = load_corpus(args.dataset, f"{args.lang}_corpus")
 
     if args.use_fragment_retriever:

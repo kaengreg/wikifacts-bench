@@ -99,8 +99,8 @@ def main():
     parser.add_argument('--dataset', type=str, default='kaengreg/wikifacts-bench')
     parser.add_argument('--lang', type=str, default='ru')
     parser.add_argument('--model', type=str, default='llama3-70b')
-    parser.add_argument('--api_url', type=str, default='')
-    parser.add_argument('--api_key', type=str, default='')
+    parser.add_argument('--api_url', type=str, default='http://89.169.128.106:6266/v1')
+    parser.add_argument('--api_key', type=str, default='874c364705747e7ab314ceba89c2029c9a72ab2154664c470eb4ce18c2f0acb0')
     parser.add_argument('--mode', choices=['fact', 'linked', 'relevant'], default='fact')
     parser.add_argument('--allow_idk', action='store_true')
     parser.add_argument('--translate_prompts', action='store_true', default=True)
@@ -134,7 +134,7 @@ def main():
     for path in [args.checkpoint, args.outputs, args.results]:
         os.makedirs(os.path.dirname(path), exist_ok=True) if os.path.dirname(path) else None
 
-    queries = load_queries(args.dataset, f"{args.lang}_queries")
+    queries = dict(list(load_queries(args.dataset, f"{args.lang}_queries").items())[:1])
     corpus = load_corpus(args.dataset, f"{args.lang}_corpus")
 
     if args.use_fragment_retriever:

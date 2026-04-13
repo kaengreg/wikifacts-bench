@@ -95,7 +95,6 @@ class SimpleRagClient:
             return None
         
         text = self._strip_think(text).strip()
-        print("THINK BLOCK STRIPPED:", text)
 
         for pattern in (r"(?is)```json\s*(\{.*?\})\s*```", r"(?is)```\s*(\{.*?\})\s*```"):
             m = re.search(pattern, text)
@@ -148,7 +147,6 @@ class SimpleRagClient:
                 last_raw = raw 
 
                 parsed = self._extract_json_dict(raw)
-                print(parsed)
                 if parsed is not None:
                     return parsed 
             

@@ -150,11 +150,6 @@ Once produced, point evaluate.py at the dataset you want to use (the default exp
 
 This project is licensed under the Apache 2.0 License. See LICENSE for details.
 
-
-Got it 👍 Here’s how you could add a clean “Contact” section at the end of your README:
-
-
-
 ### 📬 Contacts
 
 Feel free to report any problems or bugs by opening an issue on GitHub or reaching out directly via email:

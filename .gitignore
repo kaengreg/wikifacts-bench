@@ -21,3 +21,6 @@ data/
 
 # marimo notebook extra files
 __marimo__/
+
+# RusBEIR evaluation files
+rusbeir_eval/

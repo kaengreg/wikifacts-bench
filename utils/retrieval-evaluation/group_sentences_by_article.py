@@ -49,6 +49,7 @@ def group_sentences_by_article(input_file: str, output_file: str):
     
     if "<NO_VALUE>" in articles_sentences:
         print(f"Sentences without article match: {len(articles_sentences['<NO_VALUE>'])}")
+        del articles_sentences['<NO_VALUE>']
     
     # Save to JSON file
     print(f"\nSaving to {output_file}...")
@@ -59,7 +60,7 @@ def group_sentences_by_article(input_file: str, output_file: str):
 
 
 if __name__ == "__main__":
-    input_file = "../../heavy_artifacts/corpus_sents_with_article_ids.jsonl"
-    output_file = "../../heavy_artifacts/articles_pre_split_sents.json"
+    input_file = "heavy_artifacts/corpus_with_article_ids_para.jsonl"
+    output_file = "heavy_artifacts/articles_pre_split_para.json"
     
     group_sentences_by_article(input_file, output_file)

@@ -93,24 +93,23 @@ class MultilingualLemmatizer:
         model_news = f"{self.lang}_core_news_sm"
         model_web  = f"{self.lang}_core_web_sm"
 
+        def load_or_download(model_name):
+            if not spacy.util.is_package(model_name):
+                print(f"Downloading {model_name}...")
+                spacy.cli.download(model_name)
+            return spacy.load(model_name)
+
         try:
-            spacy.cli.download(model_news)
-            self.nlp = spacy.load(model_news)
-        except OSError:
+            self.nlp = load_or_download(model_news)
+        except Exception:
             try:
-                spacy.cli.download(model_web)
-                self.nlp = spacy.load(model_web)
-            except OSError:
-                print(f"Neither {model_news} nor {model_web} found. Downloading {model_news}…")
-                try:
-                    spacy.cli.download(model_web)
-                    self.nlp = spacy.load(model_web)
-                except Exception:
-                    print(f"Failed to download both models. Using blank pipeline.")
-                    self.nlp = spacy.blank(lang)
-                    self.nlp.add_pipe('attribute_ruler')
-                    self.nlp.add_pipe('lemmatizer', config={'mode': 'rule'})
-                    self.nlp.initialize()
+                self.nlp = load_or_download(model_web)
+            except Exception:
+                print(f"Failed to load/download both {model_news} and {model_web}. Using blank pipeline.")
+                self.nlp = spacy.blank(lang)
+                self.nlp.add_pipe('attribute_ruler')
+                self.nlp.add_pipe('lemmatizer', config={'mode': 'rule'})
+                self.nlp.initialize()
 
         if lang.lower() in ('ru', 'uk'):
             self.nlp.add_pipe('pymorphy_lemmatizer')

@@ -4,8 +4,16 @@ Script to add article_id attribute from corpus_articles.jsonl to sentences in co
 """
 
 import json
+import re
 from typing import Optional, Dict, List
 from tqdm import tqdm
+
+
+def normalize_text(text: str) -> str:
+    """Normalize whitespace in text: replace all whitespace sequences with a single space."""
+    if not text:
+        return ""
+    return re.sub(r'\s+', ' ', text).strip()
 
 
 def load_articles(articles_file: str) -> List[Dict]:
@@ -15,7 +23,10 @@ def load_articles(articles_file: str) -> List[Dict]:
     with open(articles_file, 'r', encoding='utf-8') as f:
         for line in f:
             if line.strip():
-                articles.append(json.loads(line))
+                article = json.loads(line)
+                if 'text' in article:
+                    article['text'] = normalize_text(article['text'])
+                articles.append(article)
     print(f"Loaded {len(articles)} articles.")
     return articles
 
@@ -81,7 +92,7 @@ def process_sentences(sentences_file: str, articles_file: str, output_file: str)
                 continue
             
             sentence = json.loads(line)
-            sentence_text = sentence['text']
+            sentence_text = normalize_text(sentence['text'])
             
             # Track if this was a cache hit
             was_cache_hit = last_article_cache is not None and sentence_text in last_article_cache['text']
@@ -117,9 +128,9 @@ def process_sentences(sentences_file: str, articles_file: str, output_file: str)
 
 
 if __name__ == "__main__":
-    sentences_file = "corpus_sents.jsonl"
-    articles_file = "corpus_articles.jsonl"
-    output_file = "corpus_sents_with_article_ids.jsonl"
+    context_size = "para"
+    sentences_file = f"heavy_artifacts/corpus_{context_size}.jsonl"
+    articles_file = "heavy_artifacts/corpus_articles.jsonl"
+    output_file = f"heavy_artifacts/corpus_with_article_ids_{context_size}.jsonl"
     
     process_sentences(sentences_file, articles_file, output_file)
-

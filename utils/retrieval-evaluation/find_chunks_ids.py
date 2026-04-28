@@ -1,3 +1,4 @@
+import argparse
 import json
 from datasets import load_dataset
 from tqdm import tqdm
@@ -33,19 +34,8 @@ def load_sents_qid_to_rels(dataset_name: str, split: str = 'qrels'):
     return qid_to_rels
 
 
-def main():
-    # Step 1-3: Load HuggingFace datasets and create mappings
-    print("Loading wikifacts-sents and creating text_to_id mapping...")
-    text_to_id = load_sents_text_to_id("kaengreg/wikifacts-sents", split="corpus")
-
-    print("Loading wikifacts-sents-qrels and creating qid_to_rels mapping...")
-    qid_to_rels = load_sents_qid_to_rels("kaengreg/wikifacts-sents-qrels", split="qrels")
-    
-    # Step 4: Process retrieval_results_2_stage.jsonl
-    print("Processing retrieval_results_2_stage.jsonl...")
-    input_file = "../../heavy_artifacts/retrieval_results_2_stage_pre_split.jsonl"
-    output_file = "../../heavy_artifacts/retrieval_results_with_ids_pre_split.jsonl"
-    
+def process_file(input_file, output_file, text_to_id, qid_to_rels):
+    """Processes input .jsonl file and finds matching chunk IDs using provided mappings."""
     matched_count = 0
     mismatched_count = 0
     with open(input_file, 'r', encoding='utf-8') as f_in, \
@@ -94,6 +84,28 @@ def main():
     print(f"\nProcessing complete! Output saved to: {output_file}")
     print(f"Total matches: {matched_count}")
     print(f"Total mismatches: {mismatched_count}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Process retrieval results and find chunk IDs.")
+    parser.add_argument("--input_file", required=True, help="Path to input .jsonl file.")
+    parser.add_argument("--output_file", required=True, help="Path to output .jsonl file.")
+    parser.add_argument("--dataset", default="sents", help="Dataset name suffix (e.g., 'sents', 'chunks'). Default is 'sents'.")
+    args = parser.parse_args()
+
+    # Step 1-3: Load HuggingFace datasets and create mappings
+    dataset_name = f"kaengreg/wikifacts-{args.dataset}"
+    qrels_name = f"kaengreg/wikifacts-{args.dataset}-qrels"
+
+    print(f"Loading {dataset_name} and creating text_to_id mapping...")
+    text_to_id = load_sents_text_to_id(dataset_name, split="corpus")
+
+    print(f"Loading {qrels_name} and creating qid_to_rels mapping...")
+    qid_to_rels = load_sents_qid_to_rels(qrels_name, split="qrels")
+    
+    # Step 4: Process input file
+    print(f"Processing {args.input_file}...")
+    process_file(args.input_file, args.output_file, text_to_id, qid_to_rels)
 
 
 if __name__ == "__main__":

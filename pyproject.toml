@@ -15,6 +15,8 @@ dependencies = [
     "nltk==3.9.1",
     "numpy==2.3.2",
     "openai==1.99.9",
+    "openpyxl>=3.1.5",
+    "pandas>=2.3.3",
     "pymorphy3==2.0.4",
     "qdrant-client==1.9.1",
     "regex==2025.7.34",

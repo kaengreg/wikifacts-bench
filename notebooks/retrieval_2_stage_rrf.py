@@ -486,8 +486,8 @@ class TwoStageRetrieverRRF:
         # Calculate article length penalties if requested
         len_penalties = None
         if self.penalty_config in ('article_penalties', 'both_penalties'):
-#             len_penalties = self.penalty_scorer.get_articles_len_penalties_local(article_subcorpus_sents)
-            len_penalties = self.penalty_scorer.get_articles_len_penalties_global(article_subcorpus_full)
+            len_penalties = self.penalty_scorer.get_articles_len_penalties_local(article_subcorpus_sents)
+            # len_penalties = self.penalty_scorer.get_articles_len_penalties_global(article_subcorpus_full)
 
         # Stage 2: Use DenseRetriever on the subcorpus to retrieve sentences
         stage2_results = self.dense_retriever.retrieve(
@@ -622,10 +622,12 @@ def main():
     )
 
     # 5. Define grids
-    top_k_articles_grid = [2, 3, 4, 5, 7, 10]
-    weights_grid = [[0.2, 0.8], [0.25, 0.75], [0.3, 0.7], [0.35, 0.65], [0.4, 0.6]]
-#     penalty_configs = ['no_penalties', 'article_penalties', 'sentence_penalties', 'both_penalties']
-    penalty_configs = ['article_penalties']
+    top_k_articles_grid = [1, 2, 3, 4, 5, 7, 10]
+    # top_k_articles_grid = [1]
+    weights_grid = [[0.0, 1.0], [0.2, 0.8], [0.25, 0.75], [0.3, 0.7], [0.35, 0.65], [0.4, 0.6]]
+    # weights_grid = [[0.0, 1.0]]
+    # penalty_configs = ['no_penalties', 'article_penalties', 'sentence_penalties', 'both_penalties']
+    penalty_configs = ['both_penalties']
 
     # 6. Run inference for all configurations
     for p_config in penalty_configs:

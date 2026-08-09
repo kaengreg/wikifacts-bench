@@ -11,11 +11,11 @@ from typing import List
 
 # Configuration
 MODEL_NAME = 'intfloat/multilingual-e5-large'
-MAX_LEN = 256
+MAX_LEN = 512
 BATCH_SIZE = 64
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 BASE_OUTPUT_DIR = 'data/vector_store/e5'
-DATASET_NAME = 'kaengreg/wikifacts-sents'
+DATASET_NAME = 'kaengreg/wikifacts-para'
 
 
 def average_pool(model_output: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:

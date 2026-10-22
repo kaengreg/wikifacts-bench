@@ -1,3 +1,23 @@
+"""Turn retrieval jsonl files into the JSON that the BEIR scorer reads.
+
+Run this from anywhere. Paths are resolved from the repository root.
+
+``--folder`` is the chunk directory (``sentences``, ``sw_4``, ``para``, ...).
+Every retrieval ``.jsonl`` under ``heavy_artifacts/retrieval/<folder>/`` is
+converted, and the same relative path is written under
+``heavy_artifacts/evaluation/<folder>/``.
+
+That covers the old cascade files and the current layout:
+
+    <model>/<penalty>/<k>_<article_weight>_<sentence_weight>.jsonl
+    <model>/dense/results.jsonl
+    <model>/rrf-k0/results.jsonl
+    <model>/rrf-k60/results.jsonl
+
+Each input line needs ``query_id`` and ``results[].text`` plus
+``results[].rrf_score``. The output is ``{query_id: {corpus_id: score}}``.
+"""
+
 import os
 import argparse
 import json
@@ -15,6 +35,8 @@ from find_chunks_ids import (
 from adapt_scores_format import process_file as adapt_scores_process
 
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
 FOLDER_TO_DATASET = {
     'sentences': 'sents',
     'sw_2': 'window_2',
@@ -26,13 +48,39 @@ FOLDER_TO_DATASET = {
 }
 
 
+def is_retrieval_jsonl(path: Path) -> bool:
+    """A retrieval file's first record has a query id and a result list."""
+    with open(path, "r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                return False
+            return isinstance(entry, dict) and "query_id" in entry and isinstance(entry.get("results"), list)
+    return False
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Batch process retrieval scores.")
-    parser.add_argument("--folder", required=True, help="Folder inside heavy_artifacts/retrieval to process (e.g., 'sentences').")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Convert retrieval jsonl files to BEIR score JSON. "
+            "Walks heavy_artifacts/retrieval/<folder>/ at any depth, "
+            "including <model>/dense|rrf-k0|rrf-k60/results.jsonl and cascade grids."
+        )
+    )
+    parser.add_argument(
+        "--folder",
+        required=True,
+        choices=sorted(FOLDER_TO_DATASET),
+        help="Chunk directory inside heavy_artifacts/retrieval.",
+    )
     args = parser.parse_args()
 
-    base_input_dir = Path("heavy_artifacts/retrieval") / args.folder
-    base_output_dir = Path("heavy_artifacts/evaluation") / args.folder
+    base_input_dir = REPO_ROOT / "heavy_artifacts" / "retrieval" / args.folder
+    base_output_dir = REPO_ROOT / "heavy_artifacts" / "evaluation" / args.folder
 
     dataset_name = FOLDER_TO_DATASET[args.folder]
 
@@ -40,6 +88,9 @@ def main():
     hf_dataset_name = f"kaengreg/wikifacts-{dataset_name}"
     qrels_name = f"kaengreg/wikifacts-{dataset_name}-qrels"
 
+    print(f"Chunk folder: {args.folder}")
+    print(f"Corpus: {hf_dataset_name}")
+    print(f"Qrels: {qrels_name}")
     print(f"Loading {hf_dataset_name} and creating text_to_id mapping...")
     text_to_id = load_sents_text_to_id(hf_dataset_name, split="corpus")
 
@@ -57,9 +108,12 @@ def main():
         print(f"No .jsonl files found in {base_input_dir}")
         return
 
-    print(f"Found {len(jsonl_files)} files to process.")
+    print(f"Found {len(jsonl_files)} .jsonl files under {base_input_dir}.")
 
     for input_file in jsonl_files:
+        if not is_retrieval_jsonl(input_file):
+            print(f"Skipping {input_file}: the first record is not a retrieval result.")
+            continue
         # Determine relative path to maintain structure
         rel_path = input_file.relative_to(base_input_dir)
         output_file = base_output_dir / rel_path.with_suffix(".json")

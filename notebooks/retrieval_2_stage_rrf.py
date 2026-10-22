@@ -1,16 +1,33 @@
+"""Two-stage retrieval: BM25 over articles, then dense search over their chunks.
+
+Run this file from ``notebooks/``. The cascade, the penalty grid, and the
+RRF weights stay as they are. ``--model`` selects the dense embedder.
+
+Dense vectors are read from
+``../data/vector_store/<model>/<chunk_size>/{corpus,queries}``.
+Build that layout from the repository root:
+
+    python utils/dataset-enhancement/create_dense_index.py \\
+      --model <profile key> \\
+      --output-dir data/vector_store/<profile key>/<chunk_size>
+
+A cache hit returns the stored vector. A miss is embedded with that
+profile's prefixes. Results are written under
+``../heavy_artifacts/retrieval/<chunk_size>/<model>/<penalty config>/``.
+"""
+
+import importlib.util
 import json
 import os
 import pickle
+import sys
 from typing import List, Dict, Any, Optional
 
 import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity 
+from sklearn.metrics.pairwise import cosine_similarity
 from tqdm import tqdm
 
-import torch 
-import torch.nn.functional as F
 from datasets import load_dataset
-from transformers import AutoModel, AutoTokenizer
 
 import nltk
 
@@ -24,6 +41,71 @@ from bm25s import BM25
 
 from lemmatizer import MultilingualLemmatizer
 
+_DENSE_INDEX_MODULE = None
+
+
+def load_dense_index_module():
+    """Load ``create_dense_index.py`` from this file's location, not the cwd."""
+    global _DENSE_INDEX_MODULE
+    if _DENSE_INDEX_MODULE is not None:
+        return _DENSE_INDEX_MODULE
+
+    module_path = os.path.abspath(
+        os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "..",
+            "utils",
+            "dataset-enhancement",
+            "create_dense_index.py",
+        )
+    )
+    spec = importlib.util.spec_from_file_location("wikifacts_create_dense_index", module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load embedder profiles from {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    _DENSE_INDEX_MODULE = module
+    return module
+
+
+def sample_chunk_texts(chunks: Dict[str, List[str]], limit: int = 32) -> List[str]:
+    sample: List[str] = []
+    for fragments in chunks.values():
+        for fragment in fragments:
+            sample.append(fragment)
+            if len(sample) >= limit:
+                return sample
+    return sample
+
+
+def report_cache_sample(label: str, texts: List[str], cache: Optional[Dict[str, np.ndarray]], limit: int = 32) -> int:
+    """Return how many sampled strings are missing from the cache."""
+    sample = texts[:limit]
+    if not sample:
+        print(f"{label}: no strings to check against the cache.")
+        return 0
+    if cache is None:
+        print(
+            f"{label}: cache is missing. All {len(sample)} sampled strings "
+            "will be embedded with the selected profile."
+        )
+        return len(sample)
+    hits = sum(text in cache for text in sample)
+    print(f"{label}: {hits}/{len(sample)} sampled strings are keys in the cache.")
+    if hits != len(sample):
+        print(f"{label}: cache misses will be embedded with the selected profile.")
+    return len(sample) - hits
+
+
+def index_build_command(model_key: str, chunk_size: str) -> str:
+    return (
+        "python utils/dataset-enhancement/create_dense_index.py "
+        f"--model {model_key} "
+        f"--output-dir data/vector_store/{model_key}/{chunk_size}"
+    )
+
+
 # WIP: languages that have their own nltk tokenizer
 LANG_MAPPING = {
     'ru': 'russian',
@@ -33,38 +115,45 @@ LANG_MAPPING = {
 
 class DenseRetriever:
     def __init__(self,
-            model_name: str,
-            maxlen: int, 
-            pooling: str,
+            profile,
+            build_embedder,
             splitter: str,
             lang: str,
             device: str = 'cuda',
-            batch_size: int = 256,
+            backend: Optional[str] = None,
             corpus_cache: Optional[Dict[str, np.ndarray]] = None,
             query_cache: Optional[Dict[str, np.ndarray]] = None,
-    ): 
-        assert pooling in ("mean", "cls"), "pooling must be either mean or cls"
+    ):
+        pooling = profile.pooling.lower()
+        assert pooling in ("mean", "cls", "last"), "pooling must be mean, cls, or last"
         assert splitter in ("sentence", "paragraph", "article"), ""
 
+        self.profile = profile
+        self.build_embedder = build_embedder
+        self.query_prefix = profile.query_prefix
+        self.document_prefix = profile.document_prefix
+        self.pooling = pooling
+        self.backend = backend or profile.backend
         self.splitter = splitter
         self.lang = lang
-
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        self.model, self.tokenizer = self.load_model(model_name, self.device)
-
-        self.maxlen = maxlen
-        self.batch_size = batch_size
-        self.pooling = pooling.lower()
+        self.device = device or "cpu"
+        self._embedder = None
 
         self.corpus_cache = corpus_cache
         self.query_cache = query_cache
 
-
-    def load_model(self, model_name: str, device: str = 'cuda'):
-        model = AutoModel.from_pretrained(model_name).to(device).eval()
-        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=False)
-
-        return model, tokenizer
+    def _embed_misses(self, prefixed_texts: list[str]) -> np.ndarray:
+        """Embed texts that already include the profile prefix."""
+        if self._embedder is None:
+            self._embedder = self.build_embedder(
+                self.profile,
+                self.backend,
+                self.device,
+                self.profile.batch_size,
+                self.profile.max_len,
+                self.profile.vllm_chunk_size,
+            )
+        return self._embedder.embed(prefixed_texts)
 
     def split_sentence(self, text: str) -> list[str]:
         return [sent.strip() for sent in sent_tokenize(text, language=LANG_MAPPING[self.lang])]
@@ -79,17 +168,10 @@ class DenseRetriever:
             return self.split_paragraph(text)
         return [text]
 
-    def _average_pool(self, model_output: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
-        last_hidden_states = model_output.last_hidden_state
-        last_hidden = last_hidden_states.masked_fill(~attention_mask[..., None].bool(), 0.0)
-        return last_hidden.sum(dim=1) / attention_mask.sum(dim=1)[..., None]
-
-    def _cls_pool(self, model_output: torch.Tensor) -> torch.Tensor:
-        return model_output.last_hidden_state[:, 0, :]
-
     def get_embeddings(self, texts: list[str], prefix: str = "", cache: Optional[Dict[str, np.ndarray]] = None) -> np.ndarray:
         """
-        Get embeddings for a list of texts, using cache if available.
+        Get embeddings for raw texts. Cache lookup uses the raw string.
+        Misses are prefixed here, then passed to ``embedder.embed``.
         """
         results = [None] * len(texts)
         to_compute_indices = []
@@ -103,26 +185,11 @@ class DenseRetriever:
                 to_compute_texts.append(f"{prefix}{text}")
 
         if to_compute_texts:
-            computed_embeddings = []
-            for i in range(0, len(to_compute_texts), self.batch_size):
-                batch_texts = to_compute_texts[i:i + self.batch_size]
-                batch_dict = self.tokenizer(batch_texts, max_length=self.maxlen, padding=True, truncation=True,
-                                            return_tensors='pt')
-                batch_dict = {k: v.to(self.device) for k, v in batch_dict.items()}
-
-                with torch.no_grad():
-                    outputs = self.model(**batch_dict)
-                if self.pooling == 'mean':
-                    batch_embeddings = self._average_pool(outputs, batch_dict['attention_mask'])
-                elif self.pooling == 'cls':
-                    batch_embeddings = self._cls_pool(outputs)
-                else:
-                    raise ValueError(f"Unknown pooling method: {self.pooling}")
-
-                batch_embeddings = F.normalize(batch_embeddings, p=2, dim=1)
-                computed_embeddings.append(batch_embeddings.cpu().numpy())
-
-            computed_embeddings = np.vstack(computed_embeddings)
+            computed_embeddings = self._embed_misses(to_compute_texts)
+            if len(computed_embeddings) != len(to_compute_indices):
+                raise RuntimeError(
+                    f"Embedder returned {len(computed_embeddings)} vectors for {len(to_compute_indices)} texts."
+                )
             for idx, emb in zip(to_compute_indices, computed_embeddings):
                 results[idx] = emb
 
@@ -150,9 +217,9 @@ class DenseRetriever:
         if not fragment_records:
             return []
 
-        query_emb = self.get_embeddings([fact], prefix="query: ", cache=self.query_cache)
+        query_emb = self.get_embeddings([fact], prefix=self.query_prefix, cache=self.query_cache)
         frag_texts = [rec['text'] for rec in fragment_records]
-        frag_embs = self.get_embeddings(frag_texts, prefix="passage: ", cache=self.corpus_cache)
+        frag_embs = self.get_embeddings(frag_texts, prefix=self.document_prefix, cache=self.corpus_cache)
 
         sims = cosine_similarity(query_emb, frag_embs)[0]
         order = sims.argsort()[::-1]
@@ -574,15 +641,29 @@ def retrieve_from_corpus(
 
 def main():
     import argparse
-    
-    parser = argparse.ArgumentParser(description="Two-stage retrieval with RRF and penalties")
+
+    indexer = load_dense_index_module()
+    model_keys = list(indexer.PROFILES)
+
+    parser = argparse.ArgumentParser(
+        description="Two-stage retrieval with RRF and penalties.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument("--model", choices=model_keys, default="e5", help="Embedder profile key.")
+    parser.add_argument(
+        "--backend",
+        choices=["transformers", "vllm"],
+        default=None,
+        help="Backend used only when a cache miss has to be embedded. Defaults to the profile backend.",
+    )
     parser.add_argument("--chunk_size", type=str, default="sentences", help="Chunk size for 2nd stage (e.g., sw_4)")
-    parser.add_argument("--device", type=str, default="cuda:0", help="Device for dense retriever")
+    parser.add_argument("--device", type=str, default="cuda:0", help="Device for a cache-miss embedder")
     parser.add_argument("--corpus_name", type=str, default="kaengreg/wikifacts-articles", help="HF dataset name")
     args = parser.parse_args()
 
     global STAGE_2_SIZE
     STAGE_2_SIZE = args.chunk_size
+    profile = indexer.PROFILES[args.model]
 
     # 1. Load data
     print("Loading datasets...")
@@ -598,8 +679,14 @@ def main():
     with open(f'../heavy_artifacts/retrieval/{STAGE_2_SIZE}/ready_chunks.json', 'r') as f:
         chunks = json.load(f)
 
-    corpus_cache = load_cache(f'../data/vector_store/e5/{STAGE_2_SIZE}/corpus')
-    query_cache = load_cache(f'../data/vector_store/e5/{STAGE_2_SIZE}/queries')
+    vector_store = f'../data/vector_store/{profile.key}/{STAGE_2_SIZE}'
+    corpus_cache = load_cache(f'{vector_store}/corpus')
+    query_cache = load_cache(f'{vector_store}/queries')
+    missed = report_cache_sample("chunks", sample_chunk_texts(chunks), corpus_cache)
+    missed += report_cache_sample("queries", list(queries_dataset.values()), query_cache)
+    if missed:
+        print("Build a matching index from the repository root:")
+        print(index_build_command(profile.key, STAGE_2_SIZE))
 
     # 4. Initialize retrievers (once)
     print("Initializing retrievers...")
@@ -611,12 +698,12 @@ def main():
     )
 
     dense_retriever = DenseRetriever(
-        model_name='intfloat/multilingual-e5-large',
-        maxlen=512,
-        pooling='mean',
+        profile=profile,
+        build_embedder=indexer.build_embedder,
         lang='ru',
         splitter='sentence',
         device=args.device,
+        backend=args.backend,
         corpus_cache=corpus_cache,
         query_cache=query_cache,
     )
@@ -654,7 +741,7 @@ def main():
                 )
 
                 # Automated out path
-                out_dir = f'../heavy_artifacts/retrieval/{STAGE_2_SIZE}/{p_config}'
+                out_dir = f'../heavy_artifacts/retrieval/{STAGE_2_SIZE}/{profile.key}/{p_config}'
                 os.makedirs(out_dir, exist_ok=True)
                 out_path = os.path.join(out_dir, f'{t_i}_{w_i[0]}_{w_i[1]}.jsonl')
 

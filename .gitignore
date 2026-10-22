@@ -24,3 +24,5 @@ __marimo__/
 
 # RusBEIR evaluation files
 rusbeir_eval/
+
+.codegraph/

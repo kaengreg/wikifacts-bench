@@ -1,0 +1,5 @@
+{
+  "extraPaths": ["rusbeir_eval"],
+  "venvPath": ".",
+  "venv": ".venv"
+}

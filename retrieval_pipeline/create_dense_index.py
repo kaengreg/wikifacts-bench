@@ -26,8 +26,9 @@ from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 
 
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 DATASET_NAME = "kaengreg/wikifacts-para"
-BASE_OUTPUT_DIR = "data/vector_store"
+BASE_OUTPUT_DIR = os.path.join(REPO_ROOT, "data", "vector_store")
 
 GIGA_QUERY_PREFIX = "Instruct: Given a query, retrieve relevant passages\nQuery: "
 QWEN_QUERY_PREFIX = (
@@ -453,6 +454,15 @@ def process_and_save(
     print(f"Saved {split_name} index to {split_dir}")
 
 
+def resolve_output_dir(raw: str | None, profile_key: str) -> str:
+    """Resolve an index directory from the repository root."""
+    if raw is None:
+        return os.path.join(BASE_OUTPUT_DIR, profile_key)
+    if os.path.isabs(raw):
+        return raw
+    return os.path.abspath(os.path.join(REPO_ROOT, raw))
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Create a dense embedding index for a WikiFacts dataset config.",
@@ -469,7 +479,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         default=None,
-        help="Index directory. Defaults to data/vector_store/<model key>.",
+        help="Index directory, relative to the repository root. Defaults to data/vector_store/<model key>.",
     )
     parser.add_argument("--device", default=None, help="Transformers device, for example cuda, cuda:0, or cpu.")
     parser.add_argument(
@@ -496,7 +506,7 @@ def main() -> None:
     batch_size = args.batch_size or profile.batch_size
     vllm_chunk_size = args.batch_size or profile.vllm_chunk_size
     max_len = args.max_len or profile.max_len
-    output_dir = args.output_dir or os.path.join(BASE_OUTPUT_DIR, profile.key)
+    output_dir = resolve_output_dir(args.output_dir, profile.key)
 
     print(
         f"Model {profile.key} ({profile.model_name}), backend {backend}, "

@@ -35,7 +35,7 @@ from find_chunks_ids import (
 from adapt_scores_format import process_file as adapt_scores_process
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 FOLDER_TO_DATASET = {
     'sentences': 'sents',

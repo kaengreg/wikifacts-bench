@@ -13,6 +13,7 @@ to vLLM and expect that package in a separate environment. Pass
 """
 
 import argparse
+import gc
 import json
 import os
 from dataclasses import dataclass, field
@@ -454,6 +455,21 @@ def process_and_save(
     print(f"Saved {split_name} index to {split_dir}")
 
 
+def release_cuda_cache(device: str) -> bool:
+    """Return reserved-but-unused CUDA blocks to the driver.
+
+    Query activations are already dead when a split finishes. The caching
+    allocator still holds the blocks they used, and a longer corpus batch
+    often cannot reuse them. This drops that reservation. Model weights stay
+    loaded. vLLM keeps its own engine pool, so this is only for Transformers.
+    """
+    if not str(device).startswith("cuda") or not torch.cuda.is_available():
+        return False
+    gc.collect()
+    torch.cuda.empty_cache()
+    return True
+
+
 def resolve_output_dir(raw: str | None, profile_key: str) -> str:
     """Resolve an index directory from the repository root."""
     if raw is None:
@@ -515,7 +531,7 @@ def main() -> None:
     if backend == "vllm" and args.device:
         print("vLLM selects the GPU itself. Set CUDA_VISIBLE_DEVICES before launching; --device is ignored.")
     embedder = build_embedder(profile, backend, device, batch_size, max_len, vllm_chunk_size)
-    for split_name in args.splits:
+    for index, split_name in enumerate(args.splits):
         process_and_save(
             split_name=split_name,
             profile=profile,
@@ -524,6 +540,9 @@ def main() -> None:
             output_dir=output_dir,
             deduplicate=split_name == "corpus",
         )
+        next_split = index + 1 < len(args.splits)
+        if backend == "transformers" and next_split and release_cuda_cache(device):
+            print(f"Released unused CUDA cache after {split_name}. Model weights stay loaded.")
     print("All tasks completed!")
 
 
